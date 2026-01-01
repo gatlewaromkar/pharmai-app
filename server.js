@@ -497,3 +497,8 @@ app.get('/api/patient-history', async (req, res) => {
 app.listen(PORT, () => {
     console.log(`🚀 PharmAI Industrial Backend Live at http://localhost:${PORT}`);
 });
+
+// Explicitly serve index.html for root path (Fix for Render static serving)
+app.get('/', (req, res) => {
+    res.sendFile(__dirname + '/public/index.html');
+});
