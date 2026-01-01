@@ -1,0 +1,78 @@
+{
+  "inventory": [
+    {
+      "id": 1,
+      "name": "Metformin",
+      "batch": "MET123",
+      "expiry": "2026-12-30",
+      "stock": 120,
+      "buyPrice": 5,
+      "sellPrice": 8
+    },
+    {
+      "id": 2,
+      "name": "Aspirin",
+      "batch": "ASP456",
+      "expiry": "2026-10-10",
+      "stock": 40,
+      "buyPrice": 2,
+      "sellPrice": 4
+    },
+    {
+      "id": 3,
+      "name": "Insulin",
+      "batch": "INS789",
+      "expiry": "2027-08-01",
+      "stock": 15,
+      "buyPrice": 120,
+      "sellPrice": 160
+    },
+    {
+      "id": 4,
+      "name": "Ibuprofen",
+      "batch": "IBU101",
+      "expiry": "2026-12-15",
+      "stock": 200,
+      "buyPrice": 3,
+      "sellPrice": 6
+    },
+    {
+      "id": 5,
+      "name": "Warfarin",
+      "batch": "WAR999",
+      "expiry": "2027-05-20",
+      "stock": 50,
+      "buyPrice": 15,
+      "sellPrice": 25
+    },
+    {
+      "id": 6,
+      "name": "Paracetamol",
+      "batch": "PCM500",
+      "expiry": "2026-11-20",
+      "stock": 500,
+      "buyPrice": 1,
+      "sellPrice": 2
+    },
+    {
+      "id": 7,
+      "name": "Atorvastatin",
+      "batch": "ATR20",
+      "expiry": "2027-01-15",
+      "stock": 80,
+      "buyPrice": 10,
+      "sellPrice": 18
+    },
+    {
+      "id": 8,
+      "name": "Amoxicillin",
+      "batch": "AMX250",
+      "expiry": "2026-09-05",
+      "stock": 150,
+      "buyPrice": 8,
+      "sellPrice": 12
+    }
+  ],
+  "sales": [],
+  "patientHistory": []
+}
