@@ -1,5 +1,7 @@
 require('dotenv').config();
 const express = require('express');
+const path = require('path');
+const fs = require('fs'); // Added filesystem module for auto-detection
 
 const bodyParser = require('body-parser');
 const cors = require('cors');
@@ -14,7 +16,8 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(morgan('dev'));
 app.use(bodyParser.json());
-app.use(express.static('public'));
+app.use(express.static(__dirname)); // Try serving from root (fallback)
+app.use(express.static(path.join(__dirname, 'public'))); // Try serving from public
 
 const MONGO_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/pharmai';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'YOUR_GEMINI_API_KEY';
@@ -494,11 +497,11 @@ app.get('/api/patient-history', async (req, res) => {
     } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
     console.log(`🚀 PharmAI Industrial Backend Live at http://localhost:${PORT}`);
 });
 
 // Explicitly serve index.html for root path (Fix for Render static serving)
 app.get('/', (req, res) => {
-    res.sendFile(__dirname + '/public/index.html');
+    res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
