@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>PharmAI - Login</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body {
+            background: linear-gradient(135deg, #0f172a 0%, #1e293b 50%, #0c4a6e 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: 'Inter', sans-serif;
+        }
+
+        .glass-card {
+            background: rgba(15, 23, 42, 0.8);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(56, 189, 248, 0.2);
+            border-radius: 24px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.5);
+        }
+
+        .input-field {
+            background: rgba(30, 41, 59, 0.5);
+            border: 1px solid rgba(56, 189, 248, 0.3);
+            color: white;
+            padding: 14px 20px;
+            border-radius: 12px;
+            width: 100%;
+            transition: all 0.3s;
+        }
+
+        .input-field:focus {
+            outline: none;
+            border-color: #38bdf8;
+            box-shadow: 0 0 20px rgba(56, 189, 248, 0.3);
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #38bdf8, #0ea5e9);
+            color: #000;
+            font-weight: 700;
+            padding: 14px 32px;
+            border-radius: 12px;
+            border: none;
+            cursor: pointer;
+            transition: all 0.3s;
+            width: 100%;
+        }
+
+        .btn-primary:hover {
+            transform: scale(1.05);
+            box-shadow: 0 10px 30px rgba(56, 189, 248, 0.5);
+        }
+
+        .role-btn {
+            background: rgba(30, 41, 59, 0.5);
+            border: 2px solid rgba(56, 189, 248, 0.3);
+            color: white;
+            padding: 20px;
+            border-radius: 16px;
+            cursor: pointer;
+            transition: all 0.3s;
+            text-align: center;
+        }
+
+        .role-btn:hover,
+        .role-btn.active {
+            border-color: #38bdf8;
+            background: rgba(56, 189, 248, 0.1);
+            transform: translateY(-5px);
+        }
+    </style>
+</head>
+
+<body>
+    <div class="glass-card p-10 w-full max-w-md">
+        <div class="text-center mb-8">
+            <h1 class="text-4xl font-black text-white mb-2">PharmAI</h1>
+            <p class="text-slate-400 text-sm">Intelligent Pharmacy Management</p>
+        </div>
+
+        <!-- Role Selection -->
+        <div id="roleSelection" class="mb-6">
+            <p class="text-white text-sm font-bold mb-4 uppercase tracking-wider">Select Your Role</p>
+            <div class="grid grid-cols-3 gap-3">
+                <div class="role-btn" onclick="selectRole('patient')">
+                    <i class="fas fa-user text-2xl text-emerald-400 mb-2"></i>
+                    <p class="text-xs font-bold text-white">Patient</p>
+                </div>
+                <div class="role-btn" onclick="selectRole('doctor')">
+                    <i class="fas fa-user-doctor text-2xl text-purple-400 mb-2"></i>
+                    <p class="text-xs font-bold text-white">Doctor</p>
+                </div>
+                <div class="role-btn" onclick="selectRole('supplier')">
+                    <i class="fas fa-truck text-2xl text-cyan-400 mb-2"></i>
+                    <p class="text-xs font-bold text-white">Supplier</p>
+                </div>
+            </div>
+        </div>
+
+        <!-- Login Form -->
+        <form id="loginForm" onsubmit="handleLogin(event)">
+            <div class="mb-4">
+                <label class="text-slate-400 text-xs font-bold uppercase tracking-wider mb-2 block">Email /
+                    Phone</label>
+                <input type="text" id="username" class="input-field" placeholder="Enter your email or phone" required>
+            </div>
+
+            <div class="mb-6">
+                <label class="text-slate-400 text-xs font-bold uppercase tracking-wider mb-2 block">Password</label>
+                <input type="password" id="password" class="input-field" placeholder="Enter your password" required>
+            </div>
+
+            <button type="submit" class="btn-primary mb-4">
+                <i class="fas fa-sign-in-alt mr-2"></i>
+                Login
+            </button>
+
+            <div class="text-center">
+                <p class="text-slate-400 text-sm">
+                    Don't have an account?
+                    <a href="#" onclick="toggleForm()" class="text-sky-400 font-bold hover:underline">Sign Up</a>
+                </p>
+            </div>
+        </form>
+
+        <!-- Signup Form (Hidden) -->
+        <form id="signupForm" class="hidden" onsubmit="handleSignup(event)">
+            <div class="mb-4">
+                <label class="text-slate-400 text-xs font-bold uppercase tracking-wider mb-2 block">Full Name</label>
+                <input type="text" id="signupName" class="input-field" placeholder="Enter your full name" required>
+            </div>
+
+            <div class="mb-4">
+                <label class="text-slate-400 text-xs font-bold uppercase tracking-wider mb-2 block">Email</label>
+                <input type="email" id="signupEmail" class="input-field" placeholder="Enter your email" required>
+            </div>
+
+            <div class="mb-4">
+                <label class="text-slate-400 text-xs font-bold uppercase tracking-wider mb-2 block">Phone</label>
+                <input type="tel" id="signupPhone" class="input-field" placeholder="Enter your phone number" required>
+            </div>
+
+            <div class="mb-6">
+                <label class="text-slate-400 text-xs font-bold uppercase tracking-wider mb-2 block">Password</label>
+                <input type="password" id="signupPassword" class="input-field" placeholder="Create a password" required>
+            </div>
+
+            <button type="submit" class="btn-primary mb-4">
+                <i class="fas fa-user-plus mr-2"></i>
+                Sign Up
+            </button>
+
+            <div class="text-center">
+                <p class="text-slate-400 text-sm">
+                    Already have an account?
+                    <a href="#" onclick="toggleForm()" class="text-sky-400 font-bold hover:underline">Login</a>
+                </p>
+            </div>
+        </form>
+    </div>
+
+    <script>
+        let selectedRole = 'patient';
+
+        function selectRole(role) {
+            selectedRole = role;
+            document.querySelectorAll('.role-btn').forEach(btn => btn.classList.remove('active'));
+            event.target.closest('.role-btn').classList.add('active');
+        }
+
+        function toggleForm() {
+            event.preventDefault();
+            document.getElementById('loginForm').classList.toggle('hidden');
+            document.getElementById('signupForm').classList.toggle('hidden');
+        }
+
+        async function handleLogin(e) {
+            e.preventDefault();
+            const username = document.getElementById('username').value;
+            const password = document.getElementById('password').value;
+
+            try {
+                const res = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ username, password, role: selectedRole })
+                });
+
+                const data = await res.json();
+
+                if (res.ok) {
+                    localStorage.setItem('pharmai_token', data.token);
+                    localStorage.setItem('pharmai_user', JSON.stringify(data.user));
+                    window.location.href = '/index.html';
+                } else {
+                    alert(data.message || 'Login failed');
+                }
+            } catch (err) {
+                alert('Login failed. Please try again.');
+            }
+        }
+
+        async function handleSignup(e) {
+            e.preventDefault();
+            const name = document.getElementById('signupName').value;
+            const email = document.getElementById('signupEmail').value;
+            const phone = document.getElementById('signupPhone').value;
+            const password = document.getElementById('signupPassword').value;
+
+            try {
+                const res = await fetch('/api/signup', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name, email, phone, password, role: selectedRole })
+                });
+
+                const data = await res.json();
+
+                if (res.ok) {
+                    alert('Account created successfully! Please login.');
+                    toggleForm();
+                } else {
+                    alert(data.message || 'Signup failed');
+                }
+            } catch (err) {
+                alert('Signup failed. Please try again.');
+            }
+        }
+
+        // Auto-select patient role
+        document.querySelector('.role-btn').classList.add('active');
+    </script>
+</body>
+
+</html>

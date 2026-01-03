@@ -1,11 +1,14 @@
 require('dotenv').config();
 const express = require('express');
+const path = require('path');
+const fs = require('fs');
 
 const bodyParser = require('body-parser');
 const cors = require('cors');
 const morgan = require('morgan');
-const mongoose = require('mongoose');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
+const jwt = require('jsonwebtoken');
+const bcrypt = require('bcryptjs');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -14,13 +17,16 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(morgan('dev'));
 app.use(bodyParser.json());
-app.use(express.static('public'));
+app.use(express.static(__dirname));
+app.use(express.static(path.join(__dirname, 'public')));
 
-const MONGO_URI = process.env.MONGODB_URI || 'mongodb://localhost:27017/pharmai';
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'YOUR_GEMINI_API_KEY';
-const useLocalMemory = true; // Fallback for demonstration
+const JWT_SECRET = process.env.JWT_SECRET || 'pharmai_secret_key_2026';
 
-// --- MODELS / DATA ---
+// Startup Diagnostic
+console.log(`🔑 API Key Status: ${GEMINI_API_KEY ? `Loaded (${GEMINI_API_KEY.substring(0, 10)}...)` : 'MISSING'}`);
+
+// --- DATA: INVENTORY & SALES ---
 const localInventory = [
     { name: "Aspirin", qty: 450, price: 12, expiry: "2026-12-01", category: "Analgesic" },
     { name: "Metformin", qty: 25, price: 55, expiry: "2025-05-15", category: "Antidiabetic" },
@@ -29,476 +35,399 @@ const localInventory = [
     { name: "Amoxicillin", qty: 300, price: 45, expiry: "2026-01-05", category: "Antibiotic" },
     { name: "Sildenafil", qty: 85, price: 250, expiry: "2027-02-14", category: "Men's Health" },
     { name: "Warfarin", qty: 200, price: 40, expiry: "2026-06-30", category: "Anticoagulant" },
-    { name: "Digoxin", qty: 120, price: 110, expiry: "2025-09-12", category: "Heart Failure" }
+    { name: "Digoxin", qty: 120, price: 110, expiry: "2025-09-12", category: "Heart Failure" },
+    { name: "Paracetamol", qty: 500, price: 20, expiry: "2027-01-01", category: "Analgesic" },
+    { name: "Cetirizine", qty: 100, price: 35, expiry: "2026-05-20", category: "Antihistamine" },
+    { name: "Azithromycin", qty: 40, price: 90, expiry: "2025-11-15", category: "Antibiotic" },
+    { name: "Pantoprazole", qty: 200, price: 80, expiry: "2026-10-10", category: "Antacid" }
 ];
 
 let localSales = [];
 let localHistory = [
-    { patient: "Rahul Sharma", details: "Prescribed Amoxicillin 500mg for throat infection.", totalAmount: 450, timestamp: new Date() },
-    { patient: "Priya Patel", details: "Routine refill for Metformin 500mg.", totalAmount: 1100, timestamp: new Date() }
+    { patient: "Rahul Sharma", details: "Prescribed Amoxicillin 500mg for throat infection.", totalAmount: 450, timestamp: new Date(Date.now() - 86400000) },
+    { patient: "Priya Patel", details: "Routine refill for Metformin 500mg.", totalAmount: 1100, timestamp: new Date(Date.now() - 172800000) }
 ];
+
+// --- USER AUTHENTICATION ---
+let users = [
+    // Demo users (password: "demo123" for all)
+    { id: 1, name: "Dr. Amit Shah", email: "doctor@pharmai.com", phone: "9876543210", password: "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy", role: "doctor" },
+    { id: 2, name: "Rahul Sharma", email: "patient@pharmai.com", phone: "9876543211", password: "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy", role: "patient" },
+    { id: 3, name: "MedSupply Co", email: "supplier@pharmai.com", phone: "9876543212", password: "$2a$10$N9qo8uLOickgx2ZMRZoMyeIjZAgcfl7p92ldGxad68LJZdL17lhWy", role: "supplier" }
+];
+
+// --- AUTHENTICATION ROUTES ---
+
+// Login
+app.post('/api/login', async (req, res) => {
+    const { username, password, role } = req.body;
+
+    try {
+        // Find user by email or phone
+        const user = users.find(u =>
+            (u.email === username || u.phone === username) && u.role === role
+        );
+
+        if (!user) {
+            return res.status(401).json({ message: 'Invalid credentials or role' });
+        }
+
+        // Verify password
+        const isValid = await bcrypt.compare(password, user.password);
+
+        if (!isValid) {
+            return res.status(401).json({ message: 'Invalid credentials' });
+        }
+
+        // Generate JWT token
+        const token = jwt.sign(
+            { id: user.id, email: user.email, role: user.role },
+            JWT_SECRET,
+            { expiresIn: '24h' }
+        );
+
+        res.json({
+            token,
+            user: {
+                id: user.id,
+                name: user.name,
+                email: user.email,
+                role: user.role
+            }
+        });
+    } catch (err) {
+        console.error('Login error:', err);
+        res.status(500).json({ message: 'Login failed' });
+    }
+});
+
+// Signup
+app.post('/api/signup', async (req, res) => {
+    const { name, email, phone, password, role } = req.body;
+
+    try {
+        // Check if user exists
+        const exists = users.find(u => u.email === email || u.phone === phone);
+
+        if (exists) {
+            return res.status(400).json({ message: 'User already exists' });
+        }
+
+        // Hash password
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        // Create new user
+        const newUser = {
+            id: users.length + 1,
+            name,
+            email,
+            phone,
+            password: hashedPassword,
+            role
+        };
+
+        users.push(newUser);
+
+        res.json({ message: 'Account created successfully' });
+    } catch (err) {
+        console.error('Signup error:', err);
+        res.status(500).json({ message: 'Signup failed' });
+    }
+});
+
+// Verify token middleware
+function verifyToken(req, res, next) {
+    const token = req.headers['authorization']?.split(' ')[1];
+
+    if (!token) {
+        return res.status(401).json({ message: 'No token provided' });
+    }
+
+    try {
+        const decoded = jwt.verify(token, JWT_SECRET);
+        req.user = decoded;
+        next();
+    } catch (err) {
+        res.status(401).json({ message: 'Invalid token' });
+    }
+}
+
+
+// --- ADVANCED INTERACTION ENGINE (HASHMAP + BIG DATA) ---
+const interactionMap = new Map();
+const rawInteractions = [
+    // --- CARDIOLOGY ---
+    { drugs: ["aspirin", "warfarin"], severity: "Major", risk: "Critical", effects: "Severe hemorrhage.", mechanism: "Additive antiplatelet + anticoagulant.", rec: "Contraindicated." },
+    { drugs: ["clopidogrel", "omeprazole"], severity: "Major", risk: "High", effects: "Clot failure.", mechanism: "CYP2C19 inhibition blocks clopidogrel.", rec: "Use Pantoprazole." },
+    { drugs: ["digoxin", "amiodarone"], severity: "Major", risk: "High", effects: "Digoxin toxicity.", mechanism: "P-gp inhibition.", rec: "Reduce Digoxin 50%." },
+    { drugs: ["sildenafil", "nitroglycerin"], severity: "Major", risk: "Fatal", effects: "Hypotensive shock.", mechanism: "Synergistic vasodilation.", rec: "STRICT CONTRAINDICATION." },
+    { drugs: ["spironolactone", "lisinopril"], severity: "Major", risk: "High", effects: "Hyperkalemia.", mechanism: "Additive potassium retention.", rec: "Monitor K+ levels." },
+    { drugs: ["amiodarone", "warfarin"], severity: "Major", risk: "High", effects: "Severe bleeding.", mechanism: "CYP2C9 inhibition.", rec: "Monitor INR closely." },
+    { drugs: ["verapamil", "atenolol"], severity: "Moderate", risk: "Medium", effects: "Bradycardia.", mechanism: "Additive AV node suppression.", rec: "Monitor heart rate." },
+
+    // --- CNS & PSYCH ---
+    { drugs: ["tramadol", "fluoxetine"], severity: "Major", risk: "High", effects: "Seizures, Serotonin Syndrome.", mechanism: "CYP2D6 inhibition.", rec: "Monitor close." },
+    { drugs: ["sertraline", "phenelzine"], severity: "Major", risk: "Fatal", effects: "Serotonin Storm.", mechanism: "MAOI + SSRI.", rec: "Contraindicated (14 day washout)." },
+    { drugs: ["lithium", "ibuprofen"], severity: "Major", risk: "High", effects: "Lithium Toxicity.", mechanism: "Reduced renal excretion.", rec: "Avoid NSAIDs." },
+    { drugs: ["diazepam", "alcohol"], severity: "Major", risk: "High", effects: "Respiratory depression.", mechanism: "Additive CNS depression.", rec: "Avoid combination." },
+    { drugs: ["amitriptyline", "tramadol"], severity: "Major", risk: "High", effects: "Serotonin Syndrome.", mechanism: "Additive serotoninergic effect.", rec: "Avoid combination." },
+    { drugs: ["clozapine", "carbamazepine"], severity: "Major", risk: "Critical", effects: "Agranulocytosis.", mechanism: "Additive bone marrow suppression.", rec: "Contraindicated." },
+
+    // --- ANTIBIOTICS & ANTIVIRALS ---
+    { drugs: ["ciprofloxacin", "theophylline"], severity: "Major", risk: "High", effects: "Seizures.", mechanism: "CYP1A2 inhibition.", rec: "Monitor levels." },
+    { drugs: ["doxycycline", "calcium"], severity: "Moderate", risk: "Medium", effects: "Antibiotic failure.", mechanism: "Chelation complex.", rec: "Separate by 2 hours." },
+    { drugs: ["metronidazole", "alcohol"], severity: "Major", risk: "High", effects: "Violent vomiting.", mechanism: "Disulfiram-like reaction.", rec: "No alcohol for 48h." },
+    { drugs: ["erythromycin", "simvastatin"], severity: "Major", risk: "High", effects: "Rhabdomyolysis.", mechanism: "CYP3A4 inhibition.", rec: "Contraindicated." },
+    { drugs: ["ritonavir", "simvastatin"], severity: "Major", risk: "Fatal", effects: "Rhabdomyolysis.", mechanism: "Potent CYP3A4 inhibition.", rec: "Contraindicated." },
+    { drugs: ["clarithromycin", "colchicine"], severity: "Major", risk: "Fatal", effects: "Colchicine toxicity.", mechanism: "P-gp and CYP3A4 inhibition.", rec: "Contraindicated in renal/hepatic impairment." },
+
+    // --- NSAIDS & ANALGESICS ---
+    { drugs: ["warfarin", "ibuprofen"], severity: "Major", risk: "High", effects: "GI Bleeding.", mechanism: "Mucosal injury + Anticoagulation.", rec: "Use Acetaminophen." },
+    { drugs: ["methotrexate", "naproxen"], severity: "Major", risk: "High", effects: "Methotrexate toxicity.", mechanism: "Reduced renal clearance.", rec: "Monitor blood counts." },
+    { drugs: ["aspirin", "methotrexate"], severity: "Major", risk: "High", effects: "Pancytopenia.", mechanism: "Renal clearance competition.", rec: "Avoid combination." },
+
+    // --- 100+ ADDITIONAL RISKY PAIRS ---
+    { drugs: ["simvastatin", "gemfibrozil"], severity: "Major", risk: "High", effects: "Muscle breakdown.", mechanism: "Glucuronidation interference.", rec: "Avoid combination." },
+    { drugs: ["atorvastatin", "clarithromycin"], severity: "Major", risk: "High", effects: "Statin toxicity.", mechanism: "CYP3A4 inhibition.", rec: "Hold statin during treatment." },
+    { drugs: ["levofloxacin", "amiodarone"], severity: "Major", risk: "Critical", effects: "QT prolongation.", mechanism: "Additive cardiac effect.", rec: "Avoid if possible." },
+    { drugs: ["fluconazole", "haloperidol"], severity: "Major", risk: "High", effects: "Fatal arrhythmia.", mechanism: "QT prolongation + CYP inhibition.", rec: "Contraindicated." },
+    { drugs: ["phenytoin", "voriconazole"], severity: "Major", risk: "High", effects: "Treatment failure.", mechanism: "CYP induction.", rec: "Avoid combination." },
+    { drugs: ["rifampin", "oral_contraceptives"], severity: "Major", risk: "High", effects: "Unplanned pregnancy.", mechanism: "CYP3A4 induction.", rec: "Use backup method." },
+    { drugs: ["rifampin", "warfarin"], severity: "Major", risk: "Medium", effects: "Clot risk.", mechanism: "Increased metabolism of Warfarin.", rec: "Increase Warfarin dose." },
+    { drugs: ["st_johns_wort", "cyclosporine"], severity: "Major", risk: "Fatal", effects: "Organ rejection.", mechanism: "Potent CYP induction.", rec: "Contraindicated." },
+    { drugs: ["grapefruit_juice", "felodipine"], severity: "Major", risk: "High", effects: "Toxicity.", mechanism: "CYP3A4 inhibition in gut.", rec: "Avoid juice." },
+    { drugs: ["tamsulosin", "sildenafil"], severity: "Moderate", risk: "Medium", effects: "Orthostatic hypotension.", mechanism: "Additive vasodilation.", rec: "Use caution." },
+    { drugs: ["lisinopril", "potassium"], severity: "Major", risk: "High", effects: "Cardiac arrest.", mechanism: "Severe hyperkalemia.", rec: "Monitor K+ levels." },
+    { drugs: ["furosemide", "gentamicin"], severity: "Major", risk: "High", effects: "Permanent deafness.", mechanism: "Additive ototoxicity.", rec: "Monitor hearing." },
+    { drugs: ["allopurinol", "amoxicillin"], severity: "Moderate", risk: "Medium", effects: "Severe rash.", mechanism: "Unknown mechanism.", rec: "Monitor skin." },
+    { drugs: ["methotrexate", "trimethoprim"], severity: "Major", risk: "Fatal", effects: "Bone marrow failure.", mechanism: "Folate antagonism.", rec: "Contraindicated." },
+    { drugs: ["digoxin", "spironolactone"], severity: "Moderate", risk: "Low", effects: "Elevated Digoxin.", mechanism: "Reduced renal clearance.", rec: "Monitor levels." },
+    { drugs: ["warfarin", "vitamin_k"], severity: "Major", risk: "High", effects: "Anticoagulant failure.", mechanism: "Direct antagonism.", rec: "Maintain stable intake." },
+    { drugs: ["citalopram", "ondansetron"], severity: "Major", risk: "High", effects: "QT Prolongation.", mechanism: "Synergistic cardiac effect.", rec: "Avoid combination." },
+    { drugs: ["venlafaxine", "tramadol"], severity: "Major", risk: "High", effects: "Serotonin Syndrome.", mechanism: "Additive reuptake inhibition.", rec: "Monitor." },
+    { drugs: ["ibuprofen", "lisinopril"], severity: "Moderate", risk: "Medium", effects: "Kidney failure.", mechanism: "Reduced renal blood flow.", rec: "Use Paracetamol." },
+    { drugs: ["metformin", "contrast_dye"], severity: "Major", risk: "Fatal", effects: "Lactic Acidosis.", mechanism: "Renal failure trigger.", rec: "Hold Metformin for 48h." },
+    { drugs: ["insulin", "alcohol"], severity: "Major", risk: "High", effects: "Severe hypoglycemia.", mechanism: "Liver glucose inhibition.", rec: "Avoid heavy drinking." },
+    { drugs: ["paracetamol", "alcohol"], severity: "Major", risk: "High", effects: "Liver failure.", mechanism: "Toxic metabolite induction.", rec: "Limit intake." },
+    { drugs: ["levothyroxine", "iron"], severity: "Moderate", risk: "Low", effects: "Hypothyroidism.", mechanism: "Absorption inhibition.", rec: "Separate by 4 hours." },
+    { drugs: ["alendronate", "calcium"], severity: "Moderate", risk: "Low", effects: "Treatment failure.", mechanism: "Bond interference.", rec: "Separate by 2 hours." },
+    { drugs: ["phenytoin", "fluoxetine"], severity: "Major", risk: "High", effects: "Phenytoin toxicity.", mechanism: "CYP inhibition.", rec: "Monitor levels." },
+    { drugs: ["valproic_acid", "lamotrigine"], severity: "Major", risk: "High", effects: "SJS/Toxic necrolysis.", mechanism: "Metabolism inhibition.", rec: "Slow titrations." },
+    { drugs: ["carbamazepine", "erythromycin"], severity: "Major", risk: "High", effects: "Toxicity.", mechanism: "CYP3A4 inhibition.", rec: "Monitor levels." },
+    { drugs: ["theophylline", "propranolol"], severity: "Major", risk: "High", effects: "Bronchospasm.", mechanism: "Antagonistic beta-effects.", rec: "Avoid in asthma." },
+    { drugs: ["omeprazole", "vitamin_b12"], severity: "Moderate", risk: "Low", effects: "Anemia.", mechanism: "Reduced acid absorption.", rec: "Supplement B12." },
+    { drugs: ["prednisone", "ibuprofen"], severity: "Major", risk: "High", effects: "GI Perforation.", mechanism: "Additive mucosal injury.", rec: "Use PPI protection." },
+    { drugs: ["methadone", "diazepam"], severity: "Major", risk: "Fatal", effects: "Death.", mechanism: "Synergistic respiratory failure.", rec: "Avoid combination." },
+    { drugs: ["lithium", "hydrochlorothiazide"], severity: "Major", risk: "High", effects: "Toxicity.", mechanism: "Reduced sodium increases Lithium.", rec: "Monitor levels." },
+    { drugs: ["digoxin", "glycyrrhiza"], severity: "Major", risk: "High", effects: "Arrhythmia.", mechanism: "Hypokalemia synergy.", rec: "Avoid licorice." },
+    { drugs: ["warfarin", "garlic"], severity: "Moderate", risk: "Medium", effects: "Bleeding.", mechanism: "Additive antiplatelet.", rec: "Use caution." },
+    { drugs: ["clopidogrel", "aspirin"], severity: "Moderate", risk: "Medium", effects: "GI Bleeding.", mechanism: "Dual antiplatelet therapy.", rec: "Monitor." },
+    { drugs: ["enoxaparin", "aspirin"], severity: "Major", risk: "High", effects: "Hematoma.", mechanism: "Additive anticoagulation.", rec: "Monitor." },
+    { drugs: ["rivaroxaban", "ketoconazole"], severity: "Major", risk: "High", effects: "Bleeding.", mechanism: "CYP3A4 + P-gp inhibition.", rec: "Avoid combination." },
+    { drugs: ["apixaban", "rifampin"], severity: "Major", risk: "High", effects: "Stroke.", mechanism: "Induced metabolism.", rec: "Avoid combination." },
+    { drugs: ["gabapentin", "morphine"], severity: "Major", risk: "High", effects: "CNS depression.", mechanism: "Additive drowsiness.", rec: "Lower dose." },
+    { drugs: ["baclofen", "alcohol"], severity: "Major", risk: "High", effects: "Coma.", mechanism: "Synergistic CNS suppression.", rec: "No alcohol." },
+    { drugs: ["carvedilol", "insulin"], severity: "Moderate", risk: "Medium", effects: "Masked hypoglycemia.", mechanism: "Beta-blockade masking tachycardia.", rec: "Monitor sugars." },
+    { drugs: ["glimepiride", "alcohol"], severity: "Major", risk: "High", effects: "Disulfiram-like reaction.", mechanism: "Acetaldehyde buildup.", rec: "No alcohol." },
+    { drugs: ["metoclopramide", "haloperidol"], severity: "Major", risk: "High", effects: "Parkinsonism.", mechanism: "Additive dopamine blockade.", rec: "Avoid combination." },
+    { drugs: ["sumatriptan", "sertraline"], severity: "Moderate", risk: "Medium", effects: "Serotonin Syndrome.", mechanism: "Requisition of serotonin.", rec: "Monitor." },
+    { drugs: ["tramadol", "carbamazepine"], severity: "Major", risk: "Medium", effects: "Analgesic failure.", mechanism: "Induced metabolism of tramadol.", rec: "Avoid." },
+    { drugs: ["levodopa", "vitamin_b6"], severity: "Moderate", risk: "Low", effects: "Reduced effect.", mechanism: "Increased peripheral metabolism.", rec: "Avoid high B6 diets." },
+    { drugs: ["caffeine", "clozapine"], severity: "Moderate", risk: "Medium", effects: "Agitation.", mechanism: "CYP1A2 inhibition of caffeine.", rec: "Limit caffeine." },
+    { drugs: ["tobacco", "clozapine"], severity: "Major", risk: "High", effects: "Reduced efficacy.", mechanism: "CYP1A2 induction by smoke.", rec: "Monitor dose if quitting." },
+    { drugs: ["azathioprine", "allopurinol"], severity: "Major", risk: "Fatal", effects: "Bone marrow failure.", mechanism: "Xanthine oxidase inhibition.", rec: "Reduce Aza dose by 75%." },
+    { drugs: ["cyclophosphamide", "allopurinol"], severity: "Moderate", risk: "Medium", effects: "Increased toxicity.", mechanism: "Reduced renal clearance.", rec: "Monitor CBC." },
+    { drugs: ["tacrolimus", "clarithromycin"], severity: "Major", risk: "High", effects: "Kidney failure.", mechanism: "Potent CYP3A4 inhibition.", rec: "Monitor levels." },
+    { drugs: ["cyclosporine", "atorvastatin"], severity: "Major", risk: "High", effects: "Muscle death.", mechanism: "CYP3A4 inhibition.", rec: "Lower statin dose." },
+    { drugs: ["tadalafil", "doxazosin"], severity: "Moderate", risk: "Medium", effects: "Hypotension.", mechanism: "Additive vasodilation.", rec: "Monitor BP." },
+    { drugs: ["clonidine", "propranolol"], severity: "Major", risk: "High", effects: "Rebound hypertension.", mechanism: "Sympathetic overactivity.", rec: "Do not stop suddenly." },
+    { drugs: ["hydrochlorothiazide", "digoxin"], severity: "Major", risk: "High", effects: "Toxicity.", mechanism: "Hypokalemia induced sensitivity.", rec: "Monitor K+." },
+    { drugs: ["amlodipine", "simvastatin"], severity: "Moderate", risk: "Medium", effects: "Muscle pain.", mechanism: "CYP3A4 competition.", rec: "Max Simva 20mg." },
+    { drugs: ["diltiazem", "midazolam"], severity: "Major", risk: "High", effects: "Prolonged sedation.", mechanism: "CYP3A4 inhibition.", rec: "Avoid combination." },
+    { drugs: ["voriconazole", "midazolam"], severity: "Major", risk: "High", effects: "Deep coma.", mechanism: "Potent CYP3A4 inhibition.", rec: "Avoid combination." },
+    { drugs: ["st_johns_wort", "oral_contraceptives"], severity: "Major", risk: "High", effects: "Failure.", mechanism: "Induced metabolism.", rec: "Avoid combination." },
+    { drugs: ["cimetidine", "warfarin"], severity: "Major", risk: "High", effects: "Bleeding.", mechanism: "CYP inhibition.", rec: "Use Famotidine." },
+    { drugs: ["phenobarbital", "warfarin"], severity: "Major", risk: "High", effects: "Blood clots.", mechanism: "Potent CYP induction.", rec: "Avoid." },
+    { drugs: ["amiodarone", "digoxin"], severity: "Major", risk: "High", effects: "Digoxin toxicity.", mechanism: "P-gp inhibition.", rec: "Half Digoxin dose." },
+    { drugs: ["colesevelam", "levothyroxine"], severity: "Moderate", risk: "Low", effects: "Hypothyroidism.", mechanism: "Binding in gut.", rec: "Separate by 4 hours." },
+    { drugs: ["magnesium_hydroxide", "ciprofloxacin"], severity: "Major", risk: "High", effects: "Sepsis/Failure.", mechanism: "Chelation.", rec: "Separate by 2 hours." },
+    { drugs: ["ketoconazole", "alcohol"], severity: "Moderate", risk: "Medium", effects: "Vomiting.", mechanism: "Disulfiram-like.", rec: "No alcohol." },
+    { drugs: ["bisoprolol", "diltiazem"], severity: "Major", risk: "High", effects: "Heart block.", mechanism: "AV node suppression.", rec: "Avoid combination." },
+    { drugs: ["atenolol", "insulin"], severity: "Moderate", risk: "Medium", effects: "Hypoglycemia.", mechanism: "Sympathetic masking.", rec: "Check sugar." },
+    { drugs: ["spironolactone", "potassium_chloride"], severity: "Major", risk: "Fatal", effects: "Cardiac arrest.", mechanism: "Severe hyperkalemia.", rec: "Contraindicated." },
+    { drugs: ["valsartan", "aliskiren"], severity: "Major", risk: "High", effects: "Renal failure.", mechanism: "RAS blockade synergy.", rec: "Avoid in Diabetes." },
+    { drugs: ["enalapril", "lithium"], severity: "Major", risk: "High", effects: "Lithium toxicity.", mechanism: "Reduced renal clearance.", rec: "Monitor levels." },
+    { drugs: ["celecoxib", "warfarin"], severity: "Major", risk: "High", effects: "Internal bleed.", mechanism: "Antiplatelet synergy.", rec: "Avoid." },
+    { drugs: ["ketorolac", "aspirin"], severity: "Major", risk: "High", effects: "Kidney failure.", mechanism: "Prostaglandin inhibition.", rec: "Contraindicated." },
+    { drugs: ["clozapine", "risperidone"], severity: "Moderate", risk: "Medium", effects: "QT prolongation.", mechanism: "Additive cardiac effect.", rec: "Monitor EKG." },
+    { drugs: ["quetiapine", "fluconazole"], severity: "Major", risk: "High", effects: "Sedation.", mechanism: "CYP3A4 inhibition.", rec: "Monitor." },
+    { drugs: ["bupropion", "selegiline"], severity: "Major", risk: "Fatal", effects: "Hypertensive crisis.", mechanism: "Dopamine surge.", rec: "Contraindicated." },
+    { drugs: ["paroxetine", "moclobemide"], severity: "Major", risk: "Fatal", effects: "Death.", mechanism: "Serotonin Syndrome.", rec: "Contraindicated." },
+    { drugs: ["linezolid", "sertraline"], severity: "Major", risk: "High", effects: "Serotonin Storm.", mechanism: "MAOI effect of Linezolid.", rec: "Avoid combination." },
+    { drugs: ["phenylephrine", "isocarboxazid"], severity: "Major", risk: "Fatal", effects: "Stroke.", mechanism: "Adrenergic surge.", rec: "Contraindicated." },
+    { drugs: ["pseudoephedrine", "phenelzine"], severity: "Major", risk: "Fatal", effects: "Crisis.", mechanism: "MAOI interaction.", rec: "Contraindicated." },
+    { drugs: ["mirtazapine", "tramadol"], severity: "Moderate", risk: "Medium", effects: "Serotonin Syndrome.", mechanism: "Additive effect.", rec: "Monitor." },
+    { drugs: ["haloperidol", "lithium"], severity: "Major", risk: "High", effects: "Encephalopathy.", mechanism: "Neural toxicity.", rec: "Monitor mental status." },
+    { drugs: ["valproic_acid", "aspirin"], severity: "Moderate", risk: "Medium", effects: "VPA toxicity.", mechanism: "Protein binding displacement.", rec: "Monitor levels." },
+    { drugs: ["topiramate", "acetazolamide"], severity: "Moderate", risk: "Medium", effects: "Kidney stones.", mechanism: "Carbonic anhydrase inhibition.", rec: "Drink water." },
+    { drugs: ["phenytoin", "sucralfate"], severity: "Moderate", risk: "Low", effects: "Seizures.", mechanism: "Absorption inhibition.", rec: "Separate by 2 hours." },
+    { drugs: ["levofloxacin", "multivitamins"], severity: "Moderate", risk: "Low", effects: "Failure.", mechanism: "Metal chelation.", rec: "Separate by 2 hours." },
+    { drugs: ["doxycycline", "iron"], severity: "Moderate", risk: "Low", effects: "Failure.", mechanism: "Binding.", rec: "Separate." },
+    { drugs: ["azithromycin", "amiodarone"], severity: "Major", risk: "High", effects: "Arrhythmia.", mechanism: "QT synergy.", rec: "Monitor." },
+    { drugs: ["telithromycin", "simvastatin"], severity: "Major", risk: "High", effects: "Muscle breakdown.", mechanism: "CYP inhibition.", rec: "Avoid." },
+    { drugs: ["itraconazole", "quinidine"], severity: "Major", risk: "Fatal", effects: "Death.", mechanism: "CYP + P-gp inhibition.", rec: "Contraindicated." },
+    { drugs: ["saquinavir", "rifampin"], severity: "Major", risk: "High", effects: "Efficacy loss.", mechanism: "CYP induction.", rec: "Avoid." },
+    { drugs: ["efavirenz", "methadone"], severity: "Moderate", risk: "Medium", effects: "Withdrawal.", mechanism: "Metabolism induction.", rec: "Increase methadone." },
+    { drugs: ["tenofovir", "didanosine"], severity: "Major", risk: "High", effects: "Toxicity.", mechanism: "Metabolism interference.", rec: "Avoid combination." },
+    { drugs: ["zidovudine", "ganciclovir"], severity: "Major", risk: "High", effects: "Anemia.", mechanism: "Additive cytotoxicity.", rec: "Monitor CBC." },
+    { drugs: ["cyclosporine", "nsaids"], severity: "Major", risk: "High", effects: "Kidney death.", mechanism: "Renal ischemia synergy.", rec: "Avoid NSAIDs." },
+    { drugs: ["tacrolimus", "grapefruit"], severity: "Major", risk: "High", effects: "Toxicity.", mechanism: "CYP inhibition.", rec: "Avoid grapefruit." },
+    { drugs: ["sirolimus", "ketoconazole"], severity: "Major", risk: "High", effects: "Toxicity.", mechanism: "Potent CYP inhibition.", rec: "Avoid." },
+    { drugs: ["tamoxifen", "fluoxetine"], severity: "Major", risk: "High", effects: "Cancer recurrence.", mechanism: "CYP2D6 inhibition blocks activation.", rec: "Avoid combination." },
+    { drugs: ["anastrozole", "estrogen"], severity: "Major", risk: "High", effects: "Failure.", mechanism: "Direct antagonism.", rec: "Avoid." },
+    { drugs: ["methotrexate", "ppi"], severity: "Moderate", risk: "Medium", effects: "Toxicity.", mechanism: "Reduced renal excretion.", rec: "Monitor levels." },
+    { drugs: ["sildenafil", "isosorbide_mononitrate"], severity: "Major", risk: "Fatal", effects: "Death.", mechanism: "Nitric oxide surge.", rec: "STRICT CONTRAINDICATION." }
+];
+
+// Build Map
+rawInteractions.forEach(i => {
+    const key = i.drugs.sort().join('|').toLowerCase();
+    interactionMap.set(key, i);
+});
 
 // --- API ENDPOINTS ---
 
-// 1. Inventory
-app.get('/api/inventory', async (req, res) => {
-    try {
-        const inv = useLocalMemory ? localInventory : await Inventory.find();
-        res.json(inv);
-    } catch (err) { res.status(500).json({ error: err.message }); }
-});
+// 1. INVENTORY
+app.get('/api/inventory', (req, res) => res.json(localInventory));
 
-// 2. Chat with Gemini (Pharmacist Persona)
+// 2. CHAT (PERSONA v4.0 - ROLE-BASED + GROUNDED)
 const genAI = new GoogleGenerativeAI(GEMINI_API_KEY);
 
 app.post('/api/chat', async (req, res) => {
-    const { message, context } = req.body;
-    if (!message) return res.status(400).json({ error: "Empty message" });
-
+    const { message, context, role } = req.body;
     try {
+        // SYSTEM INSTRUCTIONS BY ROLE
+        const roleInstructions = {
+            'patient': `You are the "Health Concierge AI". Your goal is to simplify medical info for patients. 
+                        Use friendly tone. Tell them about their loyalty points and current orders. 
+                        GROUNDING: Use Google Search if they ask about wellness trends or latest health news.`,
+            'doctor': `You are the "Clinical Intelligence Agent". Your goal is to assist Doctors with evidence-based data.
+                        Use professional medical terminology. provide interactions and dosing renal adjustments.
+                        GROUNDING: Use Google Search for the latest FDA approvals, clinical trials (2024-2025), and Lancet/NEJM papers.`,
+            'supplier': `You are the "Supply Chain Strategist". Your goal is to optimize pharmacy operations.
+                        Focus on ROI, demand spikes, and stock forecasting.
+                        GROUNDING: Use Google Search to check current global active pharmaceutical ingredient (API) prices, logistics news, and competitor stock levels.`
+        };
+
         const model = genAI.getGenerativeModel({
-            model: "gemini-1.5-flash",
-            systemInstruction: `You are PharmAI, an Elite Clinical AI Operations Director.
-            
-            **CORE IDENTITY:**
-            You are the central nervous system of this pharmacy. Intelligent, precise, and proactively safe.
+            model: "gemini-1.5-flash", // Using 1.5 for better tool use
+            tools: [
+                {
+                    googleSearchRetrieval: { dynamicRetrievalConfig: { mode: "DYNAMIC", dynamicThreshold: 0.3 } }
+                }
+            ],
+            systemInstruction: `You are Dr. PharmAI v4.0. ROLE: ${roleInstructions[role || 'patient']}.
 
-            **REAL-TIME INVENTORY LEDGER:**
-            ${JSON.stringify(context || [])}
-
-            **OPERATIONAL DIRECTIVES:**
-            1. **Inventory Intelligence:** ALWAYS cross-reference queries with the verified Stock Data above. 
-               - Reference specific quantities and prices.
-               - If Qty < 50, strictly issue a <span class="text-amber-600 font-bold">⚠ LOW STOCK ALERT</span>.
-               - If Qty = 0, state <span class="text-red-600 font-bold">OUT OF STOCK</span>.
+            **CONTEXT:**
+            - Inventory: ${JSON.stringify(localInventory)}
+            - Patient History: ${JSON.stringify(localHistory)}
             
-            2. **Clinical Precision:** Provide brief, expert clinical context (Indications/Contraindications) with every product mention.
-            
-            3. **Visual Formatting (HTML):** 
-               - Use <strong> for pricing and stock counts.
-               - Use <div class="p-2 bg-slate-100 rounded-lg mt-2 text-xs"> for clinical notes.
-               - Use <ul class="list-disc pl-4 space-y-1"> for lists.
-               - Use <span class="text-emerald-600 font-bold"> for available items.
-            
-            4. **Linguistic Adaptation:**
-               - If the user uses Marathi slang (Bhau, kay chalu, ahe ka), switch to a professional "Mumbai-Tech" Marathi-English hybrid tone.
-            
-            Exude confidence and competence.`
+            **BEHAVIOR:**
+            - If user asks about web data (news, prices, research), TRIGGER Google Search.
+            - Respond in the user's language (English/Marathi/Hindi).
+            - Add "Real-Time Scan Complete ✅" tag if you used search grounding.
+            - Keep responses premium and structured.`
         });
 
         const result = await model.generateContent(message);
-        const response = await result.response;
-        res.json({ reply: response.text() });
-    } catch (err) {
-        console.error("Gemini Error (Switching to Neural Failover):", err.message);
-
-        // --- ADVANCED OFFLINE SIMULATION (FAILOVER PROTOCOL) ---
-        // This ensures the user ALWAYS sees a high-level response even if the API quota is hit.
-
-        const lowerMsg = message.toLowerCase();
-        let reply = "";
-
-        // 1. Analyze Context (Inventory)
-        const inventory = context || [];
-        const foundItem = inventory.find(i => lowerMsg.includes(i.name.toLowerCase()));
-
-        // 2. Generate Heuristic Response
-        if (foundItem) {
-            const isLowStock = foundItem.qty < 50;
-            const stockStatus = isLowStock
-                ? `<span class="text-amber-600 font-bold">⚠ LOW STOCK (${foundItem.qty} UNITS)</span>`
-                : `<span class="text-emerald-600 font-bold">AVAILABLE (${foundItem.qty} UNITS)</span>`;
-
-            reply = `
-                <strong>${foundItem.name}</strong> is currently ${stockStatus}.<br>
-                Price: <strong>₹${foundItem.price}</strong> | Batch: B-${Math.floor(Math.random() * 900) + 100}<br>
-                <div class="p-2 bg-slate-100 rounded-lg mt-2 text-xs border-l-4 border-indigo-500">
-                    <strong>Clinical Note:</strong> Standard dispensing protocols apply. Ensure patient history verification for contraindications.
-                </div>
-            `;
-        } else if (lowerMsg.includes("hello") || lowerMsg.includes("hi") || lowerMsg.includes("namaskar") || lowerMsg.includes("bhau")) {
-            reply = `Namaskar! I am <strong>PharmAI</strong>, your Clinical Operations Director. <br>
-            System Status: <span class="text-emerald-600 font-bold">OPTIMAL</span>.<br>
-            <span class="text-xs text-slate-500">I can assist with real-time inventory tracking, price lookups, and safety protocols.</span>`;
-        } else if (lowerMsg.includes("expiry") || lowerMsg.includes("expire")) {
-            const expiring = inventory.filter(i => {
-                const days = (new Date(i.expiry) - new Date()) / (1000 * 60 * 60 * 24);
-                return days < 30;
-            });
-            if (expiring.length > 0) {
-                reply = `<strong>⚠ EXPIRY ALERT:</strong> The following assets require immediate attention:<br>
-                <ul class="list-disc pl-4 space-y-1 mt-2 text-red-600 font-bold">
-                    ${expiring.map(i => `<li>${i.name} (Exp: ${i.expiry})</li>`).join('')}
-                </ul>`;
-            } else {
-                reply = `<span class="text-emerald-600 font-bold">✔ All clinical assets are stable.</span> No immediate expiries detected in the current ledger.`;
-            }
-        } else {
-            reply = `I am unable to correlate "<strong>${message}</strong>" with the current active inventory ledger.<br>
-            <div class="p-2 bg-amber-50 text-amber-800 rounded-lg mt-2 text-xs">
-                <strong>Corrective Action:</strong> Please verify the drug spelling or check the <em>Inventory</em> tab for manual lookup.
-            </div>`;
-        }
-
-        res.json({ reply: reply });
+        res.json({
+            reply: result.response.text(),
+            grounding: !!result.response.candidates[0].groundingMetadata
+        });
+    } catch (e) {
+        console.error("❌ Gemini API Error:", e.message);
+        res.json({ reply: "⚠️ Agent Offline. Please check your network or API quota. 🧡" });
     }
 });
 
-// --- ADVANCED AI PREDICTION ENGINE ---
-app.get('/api/predictions', (req, res) => {
-    // Simulate AI analyzing 30-day historical vectors
-    const today = new Date();
-    const labels = [];
-    const data = [];
+// 3. INTERACTION CHECKER (OPTIMIZED)
+app.post('/api/check-interaction', async (req, res) => {
+    const { drug1, drug2 } = req.body;
+    if (!drug1 || !drug2) return res.status(400).json({ error: "Missing input" });
 
-    for (let i = 0; i < 7; i++) {
-        const d = new Date(today);
-        d.setDate(d.getDate() + i);
-        labels.push(d.toLocaleDateString('en-US', { weekday: 'short' }));
-        // Randomized 'Neural' prediction logic
-        data.push(Math.floor(Math.random() * (250 - 100) + 100));
+    const key = [drug1.trim().toLowerCase(), drug2.trim().toLowerCase()].sort().join('|');
+
+    // A. Map Lookup
+    if (interactionMap.has(key)) {
+        const f = interactionMap.get(key);
+        return res.json({ interaction: true, risk: f.risk, title: f.severity + " Interaction", mech: f.mechanism, rec: f.rec, source: "Database (Instant)" });
     }
 
-    res.json({
-        labels: labels,
-        datasets: [{
-            label: 'AI Demand Forecast',
-            data: data,
-            borderColor: '#6366f1',
-            borderWidth: 4,
-            pointBackgroundColor: '#ffffff',
-            pointBorderColor: '#6366f1',
-            pointRadius: 6,
-            pointHoverRadius: 8,
-            backgroundColor: 'rgba(99, 102, 241, 0.15)',
-            fill: true,
-            tension: 0.4
-        }],
-        insight: "AI analysis detects a 15% upward trend in analgesics due to seasonal viral patterns."
-    });
-});
-
-// 3. Sales / Orders
-app.get('/api/sales', async (req, res) => {
+    // B. AI Fallback
     try {
-        if (useLocalMemory) return res.json(localSales);
-        const sales = await Sale.find().sort({ _id: -1 }).limit(20);
-        res.json(sales);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+        const model = genAI.getGenerativeModel({ model: "gemini-1.5-flash" });
+        const result = await model.generateContent(`Analyze interaction: ${drug1} + ${drug2}. JSON: { "interaction": bool, "risk": "string", "mechanism": "string", "recommendation": "string" }`);
+        const text = result.response.text().replace(/```json|```/g, '').trim();
+        res.json(JSON.parse(text));
+    } catch (e) {
+        res.json({ interaction: false, risk: "Low", title: "No Interaction Found", mech: "None reported.", rec: "Observe.", source: "Scan Failed" });
+    }
 });
 
-app.post('/api/sales', async (req, res) => {
+// 4. SALES & ANALYTICS
+app.post('/api/sales', (req, res) => {
     const { patient, items, totalAmount } = req.body;
-    const statuses = ["Processing", "Dispatched", "In Transit", "Delivered"];
-    const sale = {
-        patient,
-        items,
-        totalAmount,
-        timestamp: new Date(),
-        _id: Math.random().toString(36).substr(2, 9),
-        status: "Processing", // Default status
-        trackingId: "TRK-" + Math.floor(Math.random() * 10000)
-    };
+    const sale = { patient, items, totalAmount, timestamp: new Date(), id: Math.random().toString(36).substr(2, 5) };
 
-    // Update local stock
-    items.forEach(item => {
-        const product = localInventory.find(p => p.name === item.name);
-        if (product) product.qty -= item.qty;
+    items.forEach(i => {
+        const product = localInventory.find(p => p.name === i.name);
+        if (product) product.qty -= i.qty;
     });
 
     localSales.push(sale);
-    localHistory.push({ patient, details: `Purchased: ${items.map(i => i.name).join(', ')}`, totalAmount, timestamp: new Date() });
+    localHistory.unshift({ patient, details: `Purchased: ${items.map(i => i.name).join(', ')}`, totalAmount, timestamp: new Date() });
+    if (localHistory.length > 50) localHistory.pop();
+
     res.json(sale);
 });
 
-// 3.5. Drug List for Autocomplete
-app.get('/api/drugs', async (req, res) => {
-    try {
-        const inventoryMeds = useLocalMemory ? localInventory : await Inventory.find();
-        const interactionMeds = clinicalInteractions.flatMap(i => i.pair);
-        const allDrugs = [...new Set([...inventoryMeds.map(m => m.name), ...interactionMeds])].sort();
-        res.json(allDrugs);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+app.get('/api/analytics', (req, res) => {
+    const today = new Date().setHours(0, 0, 0, 0);
+    const todaySales = localSales.filter(s => new Date(s.timestamp) >= today);
+    const revenue = todaySales.reduce((sum, s) => sum + s.totalAmount, 0);
+    res.json({ todayRevenue: revenue, orderCount: todaySales.length, totalPatients: 2840 + localHistory.length });
 });
 
-// 4. Analytics
-app.get('/api/analytics', async (req, res) => {
-    try {
-        if (useLocalMemory) {
-            return res.json({ todayRevenue: localSales.reduce((s, x) => s + x.totalAmount, 0), orderCount: localSales.length, totalPatients: 2843 + localSales.length });
-        }
-        const today = new Date(); today.setHours(0, 0, 0, 0);
-        const salesToday = await Sale.find({ timestamp: { $gte: today } });
-        const patientsCount = await Sale.distinct('patient').countDocuments();
-        res.json({ todayRevenue: salesToday.reduce((s, x) => s + x.totalAmount, 0), orderCount: salesToday.length, totalPatients: patientsCount + 2843 });
-    } catch (err) { res.status(500).json({ error: err.message }); }
-});
+app.get('/api/patient-history', (req, res) => res.json(localHistory));
 
-// 5. Interaction Checker (Enterprise-Grade Clinical Database - 200+ High-Risk Pairs)
-const clinicalInteractions = [
-    { pair: ["aspirin", "warfarin"], severity: "Major", risk: "Critical", effects: "Severe internal bleeding, mucosal damage.", mechanism: "Additive antiplatelet effect + Anticoagulant synergy.", recommendation: "Contraindicated. Extreme hemorrhage risk." },
-    { pair: ["ibuprofen", "aspirin"], severity: "Moderate", risk: "Medium", effects: "Reduced heart protection from aspirin.", mechanism: "Competitive COX-1 inhibition.", recommendation: "Avoid NSAIDs with low-dose aspirin regimens." },
-    { pair: ["metformin", "alcohol"], severity: "Major", risk: "High", effects: "Lactic Acidosis, respiratory distress.", mechanism: "Metformin increases lactate; alcohol blocks clearance.", recommendation: "Fatal risk. Avoid alcohol while on Metformin." },
-    { pair: ["lisinopril", "spironolactone"], severity: "Major", risk: "High", effects: "Fatal hyperkalemia, cardiac arrest.", mechanism: "Additive potassium retention.", recommendation: "Monitor potassium. Major heart risk." },
-    { pair: ["sildenafil", "nitroglycerin"], severity: "Major", risk: "Fatal", effects: "Catastrophic drop in blood pressure.", mechanism: "Synergistic cGMP-mediated vasodilation.", recommendation: "STRICT CONTRAINDICATION. Risk of sudden death." },
-    { pair: ["atorvastatin", "fluconazole"], severity: "Moderate", risk: "Medium", effects: "Rhabdomyolysis, muscle destruction.", mechanism: "Inhibition of CYP3A4 metabolism.", recommendation: "Increased statin toxicity risk." },
-    { pair: ["digoxin", "quinidine"], severity: "Major", risk: "High", effects: "Digoxin toxicity, vomiting, heart block.", mechanism: "Reduced renal/non-renal clearance.", recommendation: "Major toxicity risk." },
-    { pair: ["sertraline", "phenelzine"], severity: "Major", risk: "Fatal", effects: "Serotonin Syndrome, mental collapse.", mechanism: "Massive serotonin accumulation.", recommendation: "Washout period required. Contraindicated." },
-    { pair: ["ciprofloxacin", "theophylline"], severity: "Major", risk: "High", effects: "Seizures, tremors, vomiting.", mechanism: "Metabolic inhibition (CYP1A2).", recommendation: "Theophylline toxicity warning." },
-    { pair: ["methotrexate", "ibuprofen"], severity: "Major", risk: "High", effects: "Bone marrow failure, systemic toxicity.", mechanism: "Reduced renal methotrexate clearance.", recommendation: "Fatal blood count risk." },
-    { pair: ["warfarin", "bactrim"], severity: "Major", risk: "Extreme", effects: "Massive internal bleeding, hemorrhage.", mechanism: "Inhibition of S-warfarin metabolism (CYP2C9).", recommendation: "Fatal bleeding threat. Monitor INR daily." },
-    { pair: ["clopidogrel", "omeprazole"], severity: "Major", risk: "High", effects: "Stent thrombosis, stroke, heart attack.", mechanism: "Inhibition of CYP2C19 (pro-drug activation).", recommendation: "Reduces clopidogrel efficacy significantly." },
-    { pair: ["amiodarone", "digoxin"], severity: "Major", risk: "High", effects: "Heart block, vision changes (halo).", mechanism: "P-glycoprotein inhibition.", recommendation: "Reduce digoxin dose by 50% immediately." },
-    { pair: ["lithium", "spironolactone"], severity: "Major", risk: "High", effects: "Lithium toxicity, kidney distress.", mechanism: "Altered lithium renal handling.", recommendation: "Major neurotoxicity risk." },
-    { pair: ["tramadol", "fluoxetine"], severity: "Major", risk: "High", effects: "Serotonin Syndrome, seizure crisis.", mechanism: "Mixed serotonergic/CYP interference.", recommendation: "High risk of serotonin crisis." },
-    { pair: ["levofloxacin", "prednisone"], severity: "Major", risk: "High", effects: "Achilles tendon rupture, disability.", mechanism: "Enhanced collagen matrix breakdown.", recommendation: "Risk of permanent tendon injury." },
-    { pair: ["tamoxifen", "fluoxetine"], severity: "Major", risk: "High", effects: "Breast cancer relapse.", mechanism: "Inhibition of activation to Endoxifen.", recommendation: "Reduces cancer therapy efficacy." },
-    { pair: ["colchicine", "clarithromycin"], severity: "Major", risk: "Fatal", effects: "Systemic toxicity, organ failure.", mechanism: "Inhibition of clearance (P-gp/3A4).", recommendation: "CONTRAINDICATION. Fatal risk." },
-    { pair: ["warfarin", "erythromycin"], severity: "Major", risk: "High", effects: "Spontaneous bleeding, high INR.", mechanism: "CYP3A4 inhibition.", recommendation: "Major bleeding alert." },
-    { pair: ["insulin", "metoprolol"], severity: "Moderate", risk: "Medium", effects: "Masked hypoglycemia (silent low sugar).", mechanism: "Beta-blockade of sympathetic response.", recommendation: "Patient may not feel low sugar symptoms." },
-    { pair: ["clonidine", "propranolol"], severity: "Major", risk: "High", effects: "Severe rebound hypertension.", mechanism: "Withdrawal catecholamine surge.", recommendation: "Risk of hypertensive crisis." },
-    { pair: ["amiodarone", "warfarin"], severity: "Major", risk: "High", effects: "Hemorrhage, intracranial bleed.", mechanism: "Enzyme inhibition (2C9/3A4).", recommendation: "Prothrombin time increases sharply." },
-    { pair: ["simvastatin", "gemfibrozil"], severity: "Major", risk: "Fatal", effects: "Lethal Rhabdomyolysis.", mechanism: "Dual metabolic pathway conflict.", recommendation: "Contraindicated. Muscle death risk." },
-    { pair: ["rosuvastatin", "cyclosporine"], severity: "Major", risk: "High", effects: "High statin systemic exposure.", mechanism: "OATP1B1 transport inhibition.", recommendation: "Limit statin dose to 5mg." },
-    { pair: ["warfarin", "vitamin k"], severity: "Major", risk: "High", effects: "Clot formation, stroke.", mechanism: "Direct pharmacological antagonism.", recommendation: "Maintain consistent diet. Clot risk." },
-    { pair: ["warfarin", "metronidazole"], severity: "Major", risk: "High", effects: "Extreme spontaneous bleeding.", mechanism: "Metabolic pathway inhibition.", recommendation: "Potentiation of anticoagulant." },
-    { pair: ["digoxin", "verapamil"], severity: "Major", risk: "High", effects: "Bradycardia, heart failure.", mechanism: "Additive AV node suppression.", recommendation: "Monitor heart rate carefully." },
-    { pair: ["lithium", "lisinopril"], severity: "Major", risk: "High", effects: "Lithium toxicosis, confusion.", mechanism: "Reduced renal clearance.", recommendation: "Monitor lithium levels daily." },
-    { pair: ["sertraline", "tramadol"], severity: "Moderate", risk: "Medium", effects: "Hallucinations, shivering.", mechanism: "Additive serotonin levels.", recommendation: "Fever and agitation alert." },
-    { pair: ["fluoxetine", "phenelzine"], severity: "Major", risk: "Fatal", effects: "Serotonergic crisis, death.", mechanism: "Irreversible MAO inhibition conflict.", recommendation: "STRICT CONTRAINDICATION." },
-    { pair: ["amitriptyline", "phenelzine"], severity: "Major", risk: "Fatal", effects: "High fever, seizures.", mechanism: "Serotonergic/MAO synergy.", recommendation: "STRICT CONTRAINDICATION." },
-    // New Risky Pairs Added:
-    { pair: ["simvastatin", "amlodipine"], severity: "Moderate", risk: "Medium", effects: "Increased risk of myopathy/rhabdomyolysis.", mechanism: "CYP3A4 competition increases simvastatin levels.", recommendation: "Limit simvastatin to 20mg if on amlodipine." },
-    { pair: ["warfarin", "ciprofloxacin"], severity: "Major", risk: "High", effects: "Significant increase in INR, bleeding risk.", mechanism: "CYP1A2/3A4 inhibition reduces warfarin metabolism.", recommendation: "Monitor INR closely, adjust warfarin dose." },
-    { pair: ["clopidogrel", "esomeprazole"], severity: "Major", risk: "High", effects: "Reduced antiplatelet efficacy, clot risk.", mechanism: "CYP2C19 inhibition prevents clopidogrel activation.", recommendation: "Use pantoprazole instead if PPI needed." },
-    { pair: ["methotrexate", "trimethoprim"], severity: "Major", risk: "Fatal", effects: "Bone marrow suppression, pancytopenia.", mechanism: "Additive folate antagonism.", recommendation: "Avoid concurrent use. Fatal toxicity risk." },
-    { pair: ["digoxin", "clarithromycin"], severity: "Major", risk: "High", effects: "Digoxin toxicity (nausea, arrhythmias).", mechanism: "P-gp inhibition increases digoxin absorption.", recommendation: "Monitor digoxin levels. Dose reduction likely." },
-    { pair: ["fentanyl", "ritonavir"], severity: "Major", risk: "Fatal", effects: "Severe respiratory depression, coma.", mechanism: "CYP3A4 inhibition raises fentanyl levels drastically.", recommendation: "Contraindicated. Extreme overdose risk." },
-    { pair: ["spironolactone", "potassium chloride"], severity: "Major", risk: "Fatal", effects: "Hyperkalemia, cardiac arrhythmia.", mechanism: "Additive potassium sparring/supplementation.", recommendation: "Avoid K+ supplements. Monitor electrolytes." },
-    { pair: ["carbamazepine", "erythromycin"], severity: "Major", risk: "High", effects: "Carbamazepine toxicity (dizziness, ataxia).", mechanism: "CYP3A4 inhibition reduces clearance.", recommendation: "Monitor drug levels. Adjust dose." },
-    { pair: ["allopurinol", "azathioprine"], severity: "Major", risk: "High", effects: "Bone marrow toxicity, leukopenia.", mechanism: "Xanthine oxidase inhibition reduces azathioprine breakdown.", recommendation: "Reduce azathioprine dose by 75%." },
-    { pair: ["paroxetine", "tamoxifen"], severity: "Major", risk: "High", effects: "Breast cancer recurrence risk.", mechanism: "CYP2D6 inhibition prevents tamoxifen activation.", recommendation: "Avoid paroxetine. Use venlafaxine instead." },
-    { pair: ["lisinopril", "potassium"], severity: "Major", risk: "High", effects: "Hyperkalemic heart attack.", mechanism: "Blocked renal potassium excretion.", recommendation: "Avoid potassium supplements." },
-    { pair: ["metformin", "contrast"], severity: "Major", risk: "Moderate", effects: "Acute kidney failure.", mechanism: "Additive renal stress.", recommendation: "Hold Metformin post-scan." },
-    { pair: ["atorvastatin", "clarithromycin"], severity: "Major", risk: "High", effects: "Severe muscle ache.", mechanism: "Metabolic blockade.", recommendation: "Toxicity risk." },
-    { pair: ["warfarin", "st johns wort"], severity: "Major", risk: "High", effects: "Stroke, treatment failure.", mechanism: "Induction of metabolism.", recommendation: "Ineffective anticoagulation." },
-    { pair: ["rifampin", "warfarin"], severity: "Major", risk: "High", effects: "Massive clot risk.", mechanism: "Potent metabolic induction.", recommendation: "Anticoagulant failure risk." },
-    { pair: ["digoxin", "amiodarone"], severity: "Major", risk: "High", effects: "Digitalis toxicity.", mechanism: "Reduced distribution volume.", recommendation: "Dose reduction required." },
-    { pair: ["warfarin", "fluconazole"], severity: "Major", risk: "High", effects: "Hemorrhage risk.", mechanism: "Potent 2C9 inhibition.", recommendation: "Dangerous bleeding." },
-    { pair: ["lithium", "ibuprofen"], severity: "Moderate", risk: "Medium", effects: "Toxic lithium buildup.", mechanism: "Renal prostaglandins effect.", recommendation: "Monitor behavior/levels." },
-    { pair: ["sildenafil", "amlodipine"], severity: "Minor", risk: "Low", effects: "Postural hypotension.", mechanism: "Additive vasodilation.", recommendation: "BP monitor." },
-    { pair: ["metoclopramide", "levodopa"], severity: "Major", risk: "High", effects: "Worsening Parkinson's.", mechanism: "Dopamine antagonism.", recommendation: "Movement disorder risk." },
-    { pair: ["iron", "levothyroxine"], severity: "Moderate", risk: "Low", effects: "Hypothyroid relapse.", mechanism: "Chemical chelation.", recommendation: "Space doses by 4 hours." },
-    { pair: ["calcium", "tetracycline"], severity: "Moderate", risk: "Low", effects: "Antibiotic failure.", mechanism: "Metal chelation.", recommendation: "Space by 2 hours." },
-    { pair: ["sucralfate", "digoxin"], severity: "Moderate", risk: "Low", effects: "Poor DIG absorption.", mechanism: "Binding in GI tract.", recommendation: "Space doses." },
-    { pair: ["cholestyramine", "warfarin"], severity: "Moderate", risk: "Low", effects: "Poor warfarin levels.", mechanism: "Gut binding.", recommendation: "Space doses." },
-    { pair: ["allopurinol", "azathioprine"], severity: "Major", risk: "Fatal", effects: "Blood marrow crash.", mechanism: "Xanthine oxidase inhibition.", recommendation: "Fatal interaction risk." },
-    { pair: ["omeprazole", "methotrexate"], severity: "Moderate", risk: "Medium", effects: "Toxic methotrexate.", mechanism: "Renal exit block.", recommendation: "Monitor labs." },
-    { pair: ["venlafaxine", "metoprolol"], severity: "Minor", risk: "Low", effects: "Lowered heart rate.", mechanism: "Minor metabolic conflict.", recommendation: "Routine monitor." },
-    { pair: ["quetiapine", "phenytoin"], severity: "Moderate", risk: "Medium", effects: "Psychosis relapse.", mechanism: "Increased statin clearance.", recommendation: "Monitor for symptoms." },
-    { pair: ["valproate", "lamotrigine"], severity: "Major", risk: "High", effects: "SJS/TEN Skin Rash.", mechanism: "Glucuronidation inhibition.", recommendation: "Life-threatening rash risk." },
-    { pair: ["gabapentin", "morphine"], severity: "Moderate", risk: "Medium", effects: "Severe sedation.", mechanism: "Additive CNS flux.", recommendation: "Monitor breathing." },
-    { pair: ["warfarin", "ginseng"], severity: "Moderate", risk: "Low", effects: "Reduced INR.", mechanism: "Induction.", recommendation: "Clot risk." },
-    { pair: ["metformin", "topiramate"], severity: "Moderate", risk: "Medium", effects: "Lactic acidosis.", mechanism: "Bicarbonate reduction.", recommendation: "Monitor pH." },
-    { pair: ["lisinopril", "meloxicam"], severity: "Moderate", risk: "Medium", effects: "Kidney failure.", mechanism: "Triple whammy risk.", recommendation: "Check creatinine." },
-    { pair: ["warfarin", "cranberry"], severity: "Moderate", risk: "Low", effects: "INR fluctuation.", mechanism: "Unknown CYP interaction.", recommendation: "Avoid excess juice." },
-    { pair: ["theophylline", "clover"], severity: "Moderate", risk: "Medium", effects: "Toxicity.", mechanism: "Enzyme inhibition.", recommendation: "Monitor heart rate." },
-    { pair: ["digoxin", "spironolactone"], severity: "Moderate", risk: "Medium", effects: "Lab interference.", mechanism: "Renal clearance shift.", recommendation: "Monitor symptoms." },
-    { pair: ["lithium", "valsartan"], severity: "Major", risk: "High", effects: "Neurotoxicity.", mechanism: "Reduced renal exit.", recommendation: "Major toxicity threat." },
-    { pair: ["warfarin", "amoxicillin"], severity: "Moderate", risk: "Medium", effects: "Bleeding from gums.", mechanism: "Gut flora shift.", recommendation: "Check INR in 3 days." },
-    { pair: ["digoxin", "erythromycin"], severity: "Moderate", risk: "Medium", effects: "DIG toxicity.", mechanism: "P-gp inhibition.", recommendation: "Monitor symptoms." },
-    // Batch 3 Clinical Expansion:
-    { pair: ["bisoprolol", "verapamil"], severity: "Major", risk: "High", effects: "Complete heart block, bradycardia.", mechanism: "Additive AV nodal inhibition.", recommendation: "Contraindicated. Extreme cardiac risk." },
-    { pair: ["warfarin", "acetaminophen"], severity: "Moderate", risk: "Medium", effects: "Elevated INR, bleeding risk.", mechanism: "Metabolite interference with Vit K cycle.", recommendation: "Limit Tylenol to <2g/day while on Warfarin." },
-    { pair: ["simvastatin", "diltiazem"], severity: "Moderate", risk: "Medium", effects: "Myopathy, rhabdomyolysis.", mechanism: "CYP3A4 inhibition increases statin levels.", recommendation: "Max simvastatin dose 10mg." },
-    { pair: ["clonazepam", "oxycodone"], severity: "Major", risk: "Fatal", effects: "Respiratory arrest, profound sedation.", mechanism: "Synergistic CNS depression.", recommendation: "FDA Black Box Warning. Avoid combination." },
-    { pair: ["methotrexate", "penicillin"], severity: "Major", risk: "High", effects: "Methotrexate toxicity (seizures, death).", mechanism: "Reduced renal tubular secretion.", recommendation: "Monitor levels strictly or substitute antibiotic." },
-    { pair: ["citalopram", "ondansetron"], severity: "Major", risk: "High", effects: "QT prolongation, Torsades de Pointes.", mechanism: "Additive cardiac repolarization delay.", recommendation: "ECG monitoring required. Max citalopram 20mg." },
-    { pair: ["doxycycline", "isotretinoin"], severity: "Major", risk: "High", effects: "Benign intracranial hypertension.", mechanism: "Additive intracranial pressure effect.", recommendation: "Contraindicated. Blindness risk." },
-    { pair: ["colchicine", "fluconazole"], severity: "Major", risk: "Fatal", effects: "Neuromyopathy, multi-organ failure.", mechanism: "CYP3A4 inhibition prevents colchicine clearance.", recommendation: "Contraindicated if renal impairment exists." },
-    { pair: ["alendronate", "calcium carbonate"], severity: "Moderate", risk: "Low", effects: "Treatment failure (osteoporosis).", mechanism: "Physical chelation preventing absorption.", recommendation: "Wait 30-60 mins before taking calcium." },
-    { pair: ["levothyroxine", "ciprofloxacin"], severity: "Moderate", risk: "Medium", effects: "Reduced thyroid efficacy.", mechanism: "Reduced absorption via chelation.", recommendation: "Separate doses by 6 hours." },
-    { pair: ["clozapine", "ciprofloxacin"], severity: "Major", risk: "High", effects: "Seizures.", mechanism: "Metabolic blockade.", recommendation: "High toxicity alert." },
-    { pair: ["tamoxifen", "fluoxetine"], severity: "Major", risk: "High", effects: "Treatment failure.", mechanism: "Activation block.", recommendation: "Cancer risk." },
-    { pair: ["warfarin", "ceftriaxone"], severity: "Moderate", risk: "Medium", effects: "High INR.", mechanism: "Metabolic conflict.", recommendation: "Monitor INR." },
-    { pair: ["lithium", "chlorthalidone"], severity: "Major", risk: "High", effects: "Lethal lithium levels.", mechanism: "Diuretic flux change.", recommendation: "Monitor daily." },
-    { pair: ["warfarin", "danazol"], severity: "Major", risk: "High", effects: "Hemorrhage.", mechanism: "Factor synthesis block.", recommendation: "Severe bleeding." },
-    { pair: ["digoxin", "itraconazole"], severity: "Major", risk: "High", effects: "Toxicity.", mechanism: "P-gp block.", recommendation: "Reduce DIG dose." },
-    { pair: ["warfarin", "aspirin"], severity: "Major", risk: "High", effects: "Gastric hemorrhage.", mechanism: "Double mechanism.", recommendation: "Extreme caution." },
-    { pair: ["lithium", "indomethacin"], severity: "Major", risk: "Fatal", effects: "Fatal toxicity.", mechanism: "Renal blockade.", recommendation: "STRICT CONTRAINDICATION." },
-    { pair: ["warfarin", "celecoxib"], severity: "Moderate", risk: "Medium", effects: "Internal bleed.", mechanism: "Antiplatelet synergy.", recommendation: "Monitor for blood." },
-    { pair: ["methotrexate", "sulfamethoxazole"], severity: "Major", risk: "High", effects: "Bone marrow failure.", mechanism: "Renal competition.", recommendation: "High risk." },
-    { pair: ["warfarin", "clarithromycin"], severity: "Major", risk: "High", effects: "Fatal hemorrhage.", mechanism: "Powerful 3A4 block.", recommendation: "Critical bleed risk." },
-    { pair: ["digoxin", "verapamil"], severity: "Major", risk: "High", effects: "Heart block.", mechanism: "Conduction synergy.", recommendation: "Pulse monitor." },
-    { pair: ["lithium", "naproxen"], severity: "Moderate", risk: "Medium", effects: "Toxic levels.", mechanism: "Renal flux.", recommendation: "Monitor behavior." },
-    { pair: ["warfarin", "rifampin"], severity: "Major", risk: "High", effects: "Stroke risk.", mechanism: "Potent induction.", recommendation: "Clot warning." },
-    { pair: ["digoxin", "quinidine"], severity: "Major", risk: "High", effects: "Sudden toxicity.", mechanism: "Clearance drop.", recommendation: "Dangerous heart risk." },
-    { pair: ["warfarin", "erythromycin"], severity: "Major", risk: "High", effects: "Bleeding.", mechanism: "CYP3A4 block.", recommendation: "Monitor INR." },
-    { pair: ["lithium", "torsemide"], severity: "Moderate", risk: "Medium", effects: "Toxicity.", mechanism: "Diuretic flux.", recommendation: "Check labs." },
-    { pair: ["warfarin", "phenobarbital"], severity: "Major", risk: "High", effects: "Anticoagulant failure.", mechanism: "Strong induction.", recommendation: "Clot alert." },
-    { pair: ["digoxin", "ritonavir"], severity: "Major", risk: "High", effects: "Toxicity.", mechanism: "P-gp exit block.", recommendation: "Fatal danger." },
-    { pair: ["warfarin", "miconazole"], severity: "Major", risk: "Fatal", effects: "Fatal brain bleed.", mechanism: "Global CYP block.", recommendation: "CONTRAINDICATED." },
-    { pair: ["lithium", "celecoxib"], severity: "Moderate", risk: "Medium", effects: "Buildup.", mechanism: "Renal flux.", recommendation: "Routine monitor." },
-    { pair: ["warfarin", "tamoxifen"], severity: "Major", risk: "High", effects: "Hemorrhage.", mechanism: "Metabolic synergy.", recommendation: "Extreme danger." },
-    { pair: ["digoxin", "propafenone"], severity: "Major", risk: "High", effects: "Heart failure.", mechanism: "Reduced clearance.", recommendation: "Dose adjustment." },
-    { pair: ["warfarin", "phenytoin"], severity: "Major", risk: "High", effects: "INR chaos.", mechanism: "Dual pathway flux.", recommendation: "Daily lab checks." },
-    { pair: ["lithium", "ketorolac"], severity: "Major", risk: "Fatal", effects: "Coma, death.", mechanism: "Renal strike.", recommendation: "STRICT CONTRAINDICATION." },
-    { pair: ["warfarin", "dong quai"], severity: "Moderate", risk: "Medium", effects: "Bleeding.", mechanism: "Herbal synergy.", recommendation: "Avoid herbs." },
-    { pair: ["digoxin", "telithromycin"], severity: "Major", risk: "High", effects: "Fast toxicity.", mechanism: "P-gp block.", recommendation: "Critical heart risk." },
-    { pair: ["warfarin", "feverfew"], severity: "Minor", risk: "Low", effects: "Bruising.", mechanism: "Platelet flux.", recommendation: "Routine monitor." },
-    { pair: ["methotrexate", "penicillin"], severity: "Moderate", risk: "Medium", effects: "Mucositis.", mechanism: "Renal exit block.", recommendation: "Monitor skin/mouth." },
-    { pair: ["warfarin", "danaparoid"], severity: "Major", risk: "High", effects: "Hemorrhage.", mechanism: "Dual anticoagulant.", recommendation: "Hospital monitor." },
-    { pair: ["digoxin", "ciclosporin"], severity: "Major", risk: "High", effects: "Toxicity.", mechanism: "P-gp block.", recommendation: "Reduce DIG dose." },
-    { pair: ["warfarin", "quinine"], severity: "Moderate", risk: "Medium", effects: "Bleeding.", mechanism: "Factor block.", recommendation: "Monitor INR." },
-    { pair: ["lithium", "diclofenac"], severity: "Major", risk: "High", effects: "Toxicity.", mechanism: "Renal blockade.", recommendation: "Avoid NSAIDs." },
-    { pair: ["warfarin", "flutamide"], severity: "Major", risk: "High", effects: "High INR.", mechanism: "Pathway block.", recommendation: "Monitor INR." },
-    { pair: ["digoxin", "flecainide"], severity: "Moderate", risk: "Medium", effects: "Arrhythmia.", mechanism: "Conduction synergy.", recommendation: "Pulse monitor." },
-    { pair: ["warfarin", "alcohol"], severity: "Moderate", risk: "Low", effects: "Reduced INR.", mechanism: "Enzyme induction.", recommendation: "Clot risk." },
-    { pair: ["lithium", "spironolactone"], severity: "Major", risk: "High", effects: "Lithium toxicosis.", mechanism: "Renal flux.", recommendation: "Toxicity threat." },
-    { pair: ["warfarin", "levofloxacin"], severity: "Moderate", risk: "Medium", effects: "Spontaneous bleed.", mechanism: "Flora shift.", recommendation: "Bleeding alert." },
-    { pair: ["digoxin", "verapamil"], severity: "Major", risk: "High", effects: "Heart block.", mechanism: "Dual mechanism.", recommendation: "Bradycardia alert." },
-    { pair: ["warfarin", "clarithromycin"], severity: "Major", risk: "High", effects: "Hemorrhage.", mechanism: "Enzyme blockade.", recommendation: "Fatal bleeding threat." },
-    { pair: ["lithium", "valsartan"], severity: "Major", risk: "High", effects: "Neurotoxicity.", mechanism: "Renal block.", recommendation: "Toxicity risk." },
-    { pair: ["warfarin", "amoxicillin"], severity: "Moderate", risk: "Medium", effects: "INR spike.", mechanism: "Flora change.", recommendation: "Monitor labs." },
-    { pair: ["digoxin", "quinidine"], severity: "Major", risk: "High", effects: "Sudden toxicity.", mechanism: "Clearance drop.", recommendation: "High risk." },
-    { pair: ["warfarin", "simvastatin"], severity: "Moderate", risk: "Low", effects: "Slight bleed.", mechanism: "Shared pathway.", recommendation: "Routine check." },
-    { pair: ["lithium", "lisinopril"], severity: "Major", risk: "High", effects: "Lithium coma.", mechanism: "Renal blockade.", recommendation: "Danger alert." },
-    { pair: ["warfarin", "rifampin"], severity: "Major", risk: "High", effects: "Stroke danger.", mechanism: "Potent induction.", recommendation: "Clot warning." },
-    { pair: ["digoxin", "telithromycin"], severity: "Major", risk: "High", effects: "Heart failure.", mechanism: "P-gp block.", recommendation: "Critical heart danger." },
-    { pair: ["warfarin", "vitamin k"], severity: "Major", risk: "High", effects: "Clot formation.", mechanism: "Direct antagonism.", recommendation: "Clot alert." },
-    { pair: ["lithium", "naproxen"], severity: "Moderate", risk: "Medium", effects: "Toxic buildup.", mechanism: "Renal flux.", recommendation: "Monitor labs." },
-    { pair: ["warfarin", "fenofibrate"], severity: "Moderate", risk: "Medium", effects: "Increased INR, bleeding.", mechanism: "Competition for binding.", recommendation: "Monitor INR." },
-    { pair: ["insulin", "pioglitazone"], severity: "Moderate", risk: "Medium", effects: "Fluid retention, heart failure risk.", mechanism: "Synergistic effect on sodium reabsorption.", recommendation: "Monitor for edema/weight gain." },
-    { pair: ["metformin", "topiramate"], severity: "Moderate", risk: "Medium", effects: "Metabolic acidosis.", mechanism: "Additive reduction in bicarbonate.", recommendation: "Monitor serum pH." },
-    { pair: ["lisinopril", "ibuprofen"], severity: "Moderate", risk: "Medium", effects: "Kidney failure, high BP.", mechanism: "NSAIDs reduce ACEI renal protective effect.", recommendation: "Avoid chronic NSAIDs." },
-    { pair: ["atorvastatin", "gemfibrozil"], severity: "Major", risk: "High", effects: "Muscle destruction.", mechanism: "OATP1B1 inhibition.", recommendation: "Higher risk of myopathy." },
-    { pair: ["digoxin", "paroxetine"], severity: "Minor", risk: "Low", effects: "Minor DIG rise.", mechanism: "Minor P-gp effect.", recommendation: "Routine monitor." },
-    { pair: ["warfarin", "omeprazole"], severity: "Minor", risk: "Low", effects: "Slight INR elevation.", mechanism: "CYP2C19 inhibition.", recommendation: "Routine monitor." },
-    { pair: ["lithium", "hydrochlorothiazide"], severity: "Major", risk: "High", effects: "Lithium toxicity.", mechanism: "Reduced renal exit.", recommendation: "Danger alert." },
-    { pair: ["amiodarone", "digoxin"], severity: "Major", risk: "High", effects: "Digitalis toxicity.", mechanism: "P-gp and metabolic block.", recommendation: "Reduce DIG dose." },
-    { pair: ["warfarin", "fluoxetine"], severity: "Moderate", risk: "Medium", effects: "Bleeding risk.", mechanism: "Antiplatelet properties.", recommendation: "Check for bruising." },
-    { pair: ["ciprofloxacin", "theophylline"], severity: "Major", risk: "High", effects: "Seizures.", mechanism: "CYP1A2 inhibition.", recommendation: "Monitor heart/breath." },
-    { pair: ["methotrexate", "aspirin"], severity: "Major", risk: "High", effects: "Toxic MXT buildup.", mechanism: "Renal exit block.", recommendation: "High danger." },
-    { pair: ["warfarin", "doxycycline"], severity: "Moderate", risk: "Medium", effects: "INR spike.", mechanism: "Flora shift.", recommendation: "Monitor INR." },
-    { pair: ["digoxin", "verapamil"], severity: "Major", risk: "High", effects: "Heart block.", mechanism: "Conduction synergy.", recommendation: "Pulse monitor." },
-    { pair: ["lithium", "spironolactone"], severity: "Major", risk: "High", effects: "Lithium toxicosis.", mechanism: "Renal flux.", recommendation: "Toxicity threat." },
-    { pair: ["warfarin", "amoxicillin"], severity: "Moderate", risk: "Medium", effects: "Spontaneous bleed.", mechanism: "Flora shift.", recommendation: "Bleeding alert." },
-    { pair: ["digoxin", "quinidine"], severity: "Major", risk: "High", effects: "Sudden toxicity.", mechanism: "Clearance drop.", recommendation: "High risk." },
-    { pair: ["warfarin", "simvastatin"], severity: "Moderate", risk: "Low", effects: "Slight bleed.", mechanism: "Shared pathway.", recommendation: "Routine check." },
-    { pair: ["lithium", "lisinopril"], severity: "Major", risk: "High", effects: "Lithium coma.", mechanism: "Renal blockade.", recommendation: "Danger alert." },
-    { pair: ["warfarin", "rifampin"], severity: "Major", risk: "High", effects: "Stroke danger.", mechanism: "Potent induction.", recommendation: "Clot warning." },
-    { pair: ["digoxin", "telithromycin"], severity: "Major", risk: "High", effects: "Heart failure.", mechanism: "P-gp block.", recommendation: "Critical heart danger." },
-    { pair: ["warfarin", "vitamin k"], severity: "Major", risk: "High", effects: "Clot formation.", mechanism: "Direct antagonism.", recommendation: "Clot alert." },
-    { pair: ["lithium", "naproxen"], severity: "Moderate", risk: "Medium", effects: "Toxic buildup.", mechanism: "Renal flux.", recommendation: "Monitor labs." },
-    { pair: ["venlafaxine", "tramadol"], severity: "Major", risk: "High", effects: "Seizures, Serotonin Syndrome.", mechanism: "Combined serotonergic pathways.", recommendation: "Seizure risk alert." },
-    { pair: ["diltiazem", "metoprolol"], severity: "Moderate", risk: "Medium", effects: "Extreme bradycardia, heart failure.", mechanism: "Additive AV nodes suppression.", recommendation: "Monitor heart rate." },
-    { pair: ["warfarin", "metronidazole"], severity: "Major", risk: "High", effects: "Severe internal hemorrhage.", mechanism: "Metabolic pathway block.", recommendation: "Extreme bleeding risk." },
-    { pair: ["lithium", "diclofenac"], severity: "Major", risk: "High", effects: "Lethal lithium toxicosis.", mechanism: "Renal exit blockage.", recommendation: "Avoid combination." },
-    { pair: ["digoxin", "amiodarone"], severity: "Major", risk: "High", effects: "Double vision, heart block.", mechanism: "P-gp and metabolic block.", recommendation: "Dose reduction required." },
-    { pair: ["warfarin", "erythromycin"], severity: "Major", risk: "High", effects: "High INR, spontaneous bleeding.", mechanism: "CYP inhibition.", recommendation: "Bleeding risk alert." },
-    { pair: ["methotrexate", "naproxen"], severity: "Major", risk: "High", effects: "Oncology toxic syndrome.", mechanism: "Renal competition.", recommendation: "Fatal blood count risk." },
-    { pair: ["lisinopril", "valsartan"], severity: "Moderate", risk: "Medium", effects: "Hyperkalemia, kidney stress.", mechanism: "Additive effect.", recommendation: "Check potassium." },
-    { pair: ["metformin", "alcohol"], severity: "Major", risk: "High", effects: "Lactic acid shock.", mechanism: "Metabolic pathway conflict.", recommendation: "Fatal danger." },
-    { pair: ["warfarin", "celecoxib"], severity: "Moderate", risk: "Medium", effects: "Hemorrhage threat.", mechanism: "Antiplatelet synergy.", recommendation: "Monitor for blood." },
-    { pair: ["lithium", "indomethacin"], severity: "Major", risk: "Fatal", effects: "Fatal neuro-toxicity.", mechanism: "Renal exit collapse.", recommendation: "Contraindicated." },
-    { pair: ["digoxin", "spironolactone"], severity: "Moderate", risk: "Medium", effects: "Toxicity risk.", mechanism: "Clearance drop.", recommendation: "Check DIG level." },
-    { pair: ["warfarin", "clarithromycin"], severity: "Major", risk: "High", effects: "Lethal hemorrhage.", mechanism: "Pathway blockade.", recommendation: "Fatal bleed threat." },
-    { pair: ["sildenafil", "nitroglycerin"], severity: "Major", risk: "Fatal", effects: "Sudden death from low BP.", mechanism: "GMP synergy.", recommendation: "NEVER COMBINE." },
-    { pair: ["simvastatin", "amiodarone"], severity: "Moderate", risk: "Medium", effects: "Muscle destruction.", mechanism: "Pathway conflict.", recommendation: "Check urine color." },
-    { pair: ["warfarin", "amoxicillin"], severity: "Moderate", risk: "Medium", effects: "Sudden INR rise.", mechanism: "Flora shift.", recommendation: "Check labs." },
-    { pair: ["lithium", "losartan"], severity: "Major", risk: "High", effects: "Toxic lithium accumulation.", mechanism: "Renal exit block.", recommendation: "Monitor behavior." },
-    { pair: ["digoxin", "quinidine"], severity: "Major", risk: "High", effects: "Rapid toxicity.", mechanism: "Clearance drop.", recommendation: "Fatal heart risk." },
-    { pair: ["warfarin", "simvastatin"], severity: "Moderate", risk: "Low", effects: "INR rise.", mechanism: "Shared pathway.", recommendation: "Routine monitor." },
-    { pair: ["lisinopril", "spironolactone"], severity: "Major", risk: "High", effects: "Cardiac arrest.", mechanism: "Additive K+.", recommendation: "Check potassium daily." },
-    { pair: ["metformin", "alcohol"], severity: "Major", risk: "Fatal", effects: "Lactic acidosis death.", mechanism: "Pathway conflict.", recommendation: "STRICT AVOIDANCE." },
-    { pair: ["warfarin", "st johns wort"], severity: "Major", risk: "High", effects: "Clot formation, stroke.", mechanism: "Induction.", recommendation: "Clot alert." },
-    { pair: ["lithium", "ibuprofen"], severity: "Moderate", risk: "Medium", effects: "Toxic levels.", mechanism: "Renal flux.", recommendation: "Monitor behavior." },
-    { pair: ["digoxin", "amiodarone"], severity: "Major", risk: "High", effects: "Heart block.", mechanism: "P-gp block.", recommendation: "Reduce dose." },
-    { pair: ["warfarin", "fluconazole"], severity: "Major", risk: "High", effects: "Massive internal bleed.", mechanism: "2C9 block.", recommendation: "Dangerous bleeding." },
-    { pair: ["ibuprofen", "aspirin"], severity: "Moderate", risk: "Medium", effects: "Heart risk.", mechanism: "COX block.", recommendation: "Avoid NSAIDs." },
-    { pair: ["lithium", "naproxen"], severity: "Moderate", risk: "Medium", effects: "Toxicity.", mechanism: "Renal flux.", recommendation: "Check serum." },
-    { pair: ["digoxin", "verapamil"], severity: "Major", risk: "High", effects: "Bradycardia.", mechanism: "AV node flux.", recommendation: "Check pulse." },
-    { pair: ["warfarin", "erythromycin"], severity: "Major", risk: "High", effects: "INR spike.", mechanism: "Pathway block.", recommendation: "Monitor INR." },
-    { pair: ["aspirin", "warfarin"], severity: "Major", risk: "Critical", effects: "Fatal GI bleed.", mechanism: "Pathway synergy.", recommendation: "STRICT CAUTION." },
-    { pair: ["lithium", "torsemide"], severity: "Moderate", risk: "Medium", effects: "Toxicity risk.", mechanism: "Diuretic flux.", recommendation: "Check labs." },
-    { pair: ["digoxin", "ritonavir"], severity: "Major", risk: "Fatal", effects: "Lethal heart failure.", mechanism: "P-gp block.", recommendation: "Critical heart alert." },
-    { pair: ["warfarin", "bactrim"], severity: "Major", risk: "Fatal", effects: "Sudden internal bleeding.", mechanism: "Pathway block.", recommendation: "Fatal bleeding threat." },
-    { pair: ["lithium", "spironolactone"], severity: "Major", risk: "High", effects: "Toxicity coma.", mechanism: "Renal flux.", recommendation: "Danger alert." },
-    { pair: ["warfarin", "amoxicillin"], severity: "Moderate", risk: "Medium", effects: "INR rise.", mechanism: "Flora shift.", recommendation: "Monitor INR." }
-];
-
-app.post('/api/check-interaction', (req, res) => {
-    const { drug1, drug2 } = req.body;
-    if (!drug1 || !drug2) return res.status(400).json({ error: "Missing drugs" });
-
-    const d1 = drug1.toLowerCase().trim();
-    const d2 = drug2.toLowerCase().trim();
-
-    // Enterprise Match: Word-based search to prevent false partial matches
-    const found = clinicalInteractions.find(i => {
-        const [target1, target2] = i.pair;
-
-        const isMatch = (input, target) => {
-            const words = input.split(/[\s-]+/);
-            return words.some(w => w === target) || input === target;
-        };
-
-        const matchesPrimary = isMatch(d1, target1) && isMatch(d2, target2);
-        const matchesReverse = isMatch(d1, target2) && isMatch(d2, target1);
-
-        return matchesPrimary || matchesReverse;
-    });
-
-    if (found) {
-        res.json({
-            interaction: true,
-            ...found,
-            message: `PharmAI Clinical Alert: Professional verification identified a potential ${found.severity} interaction between ${drug1} and ${drug2}.`
-        });
-    } else {
-        res.json({
-            interaction: false,
-            message: "No high-risk clinical interactions found in current database. Always verify with a senior clinical pharmacist."
-        });
+// 5. PREDICTIONS & ALERTS
+app.get('/api/predictions', (req, res) => {
+    const days = [];
+    const data = [];
+    for (let i = 0; i < 7; i++) {
+        const d = new Date(); d.setDate(d.getDate() + i);
+        days.push(d.toLocaleDateString('en-US', { weekday: 'short' }));
+        data.push(Math.floor(Math.random() * 150) + 50);
     }
+    res.json({ labels: days, datasets: [{ label: 'Predicted Demand', data, borderColor: '#6366f1', fill: true }] });
 });
 
-// 6. Expiry Alert System
-app.get('/api/expiry-alerts', async (req, res) => {
-    try {
-        const currentInv = useLocalMemory ? localInventory : await Inventory.find();
-        const today = new Date();
-        const alerts = currentInv.map(med => {
-            const expDate = new Date(med.expiry);
-            const diffTime = expDate - today;
-            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-
-            let status = "Safe";
-            if (diffDays <= 0) status = "Expired";
-            else if (diffDays <= 30) status = "Critical";
-            else if (diffDays <= 90) status = "Warning";
-
-            return { name: med.name, expiry: med.expiry, daysRemaining: diffDays, status };
-        }).filter(a => a.status !== "Safe");
-
-        res.json(alerts);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+app.get('/api/expiry-alerts', (req, res) => {
+    const alerts = localInventory.filter(i => {
+        const days = (new Date(i.expiry) - new Date()) / (86400000);
+        return days < 90;
+    }).map(i => ({ name: i.name, expiry: i.expiry, status: "Warning" }));
+    res.json(alerts);
 });
 
-// 7. Patient History
-app.get('/api/patient-history', async (req, res) => {
-    try {
-        if (useLocalMemory) return res.json(localHistory);
-        const history = await History.find().sort({ _id: -1 }).limit(50);
-        res.json(history);
-    } catch (err) { res.status(500).json({ error: err.message }); }
+app.get('/api/drugs', (req, res) => {
+    const keys = Array.from(interactionMap.values()).flatMap(i => i.drugs);
+    const all = [...new Set([...localInventory.map(i => i.name), ...keys])].sort();
+    res.json(all);
 });
 
-app.listen(PORT, () => {
-    console.log(`🚀 PharmAI Industrial Backend Live at http://localhost:${PORT}`);
-});
-
-// Explicitly serve index.html for root path (Fix for Render static serving)
-app.get('/', (req, res) => {
-    res.sendFile(__dirname + '/public/index.html');
+app.listen(PORT, '0.0.0.0', () => {
+    console.log(`\n🚀 PHARMAI SYSTEM v4.0 [FULL SUITE]`);
+    console.log(`🌐 Server: http://localhost:${PORT}`);
+    console.log(`🧠 Map: ${interactionMap.size} High-Risk Pairs`);
 });
