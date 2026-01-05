@@ -17,8 +17,8 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(morgan('dev'));
 app.use(bodyParser.json());
-app.use(express.static(__dirname));
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'))); // New high-quality UI
+app.use(express.static(__dirname)); // Fallback for other files if needed
 
 const GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'YOUR_GEMINI_API_KEY';
 const JWT_SECRET = process.env.JWT_SECRET || 'pharmai_secret_key_2026';
