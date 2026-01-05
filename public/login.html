@@ -122,7 +122,17 @@
                 Login
             </button>
 
-            <div class="text-center">
+            <div class="mt-6 p-4 bg-teal-500/10 border border-teal-500/20 rounded-xl">
+                <p class="text-[10px] font-black text-teal-500 uppercase tracking-widest mb-2"><i
+                        class="fas fa-info-circle mr-1"></i> Demo Access</p>
+                <div class="text-[10px] text-slate-400 space-y-1">
+                    <p><strong>Doctor:</strong> doctor@pharmai.com</p>
+                    <p><strong>Patient:</strong> patient@pharmai.com</p>
+                    <p><strong>Password:</strong> demo123</p>
+                </div>
+            </div>
+
+            <div class="text-center mt-6">
                 <p class="text-slate-400 text-sm">
                     Don't have an account?
                     <a href="#" onclick="toggleForm()" class="text-sky-400 font-bold hover:underline">Sign Up</a>
@@ -232,6 +242,14 @@
             } catch (err) {
                 alert('Signup failed. Please try again.');
             }
+        }
+
+        // Check if already logged in
+        if (localStorage.getItem('pharmai_token')) {
+            const goToDb = document.createElement('div');
+            goToDb.className = "mt-4 text-center p-2 bg-emerald-500/20 border border-emerald-500/40 rounded-lg animate-pulse";
+            goToDb.innerHTML = `<a href="index.html" class="text-emerald-400 font-bold text-xs uppercase tracking-widest">Active Link Detected - Go to Dashboard</a>`;
+            document.querySelector('.glass-card').appendChild(goToDb);
         }
 
         // Auto-select patient role

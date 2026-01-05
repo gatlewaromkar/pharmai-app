@@ -858,13 +858,13 @@
                 </div>
             </div>
 
-            <button onclick="openRolePortal()"
-                class="text-[10px] font-black text-slate-500 hover:text-white transition tracking-widest flex items-center gap-2">
-                <i class="fas fa-fingerprint text-teal-400"></i> PORTAL SWITCH
+            <button onclick="logout()"
+                class="text-[10px] font-black text-rose-500 hover:text-rose-400 transition tracking-widest flex items-center gap-2">
+                <i class="fas fa-sign-out-alt"></i> LOGOUT
             </button>
             <div class="w-10 h-10 rounded-xl bg-slate-800 border border-white/10 p-1">
                 <img src="https://ui-avatars.com/api/?name=Bio&background=00f2fe&color=fff" class="rounded-lg"
-                    alt="Profile">
+                    alt="Profile" id="headerAvatar">
             </div>
         </div>
     </header>
@@ -2011,7 +2011,9 @@
                 document.querySelectorAll('.nav-link').forEach(link => {
                     link.classList.remove('text-teal-400', 'border-b-2', 'border-teal-400');
                 });
-                event?.target?.classList.add('text-teal-400', 'border-b-2', 'border-teal-400');
+                if (typeof event !== 'undefined' && event?.target?.classList.contains('nav-link')) {
+                    event.target.classList.add('text-teal-400', 'border-b-2', 'border-teal-400');
+                }
             }
 
             // Special initializations
@@ -2058,11 +2060,30 @@
 
         async function init() {
             initNeuralBackground();
+
+            // --- AUTO-LOGIN DETECTION ---
+            const token = localStorage.getItem('pharmai_token');
+            const savedUser = localStorage.getItem('pharmai_user');
+
+            if (token && savedUser) {
+                const user = JSON.parse(savedUser);
+                currentRole = user.role;
+
+                // Update Profile UI
+                const greetings = document.querySelectorAll('h1 span.text-teal-500');
+                greetings.forEach(g => { g.innerText = user.name.split(' ')[0] + '!'; });
+
+                showToast(`Welcome back, Agent ${user.name.split(' ')[0]}`, 'success');
+            } else {
+                // If no session, show role selection or redirect to login
+                // For now, we'll let the user choose or redirect if you want to enforce login
+                // window.location.href = '/login.html';
+            }
+
             await refreshData();
-            await updateDashboard(); // Load real dashboard stats
-            selectRole(currentRole); // Ensures body classes and sections are initialized
+            await updateDashboard();
+            selectRole(currentRole);
             initTelemetryFluctuation();
-            showToast('Neural Link Active', 'success');
         }
 
         function initTelemetryFluctuation() {
@@ -3047,6 +3068,12 @@
 
         function openQuickOrder() { document.getElementById('quickOrderModal').classList.remove('hidden'); }
         function closeQuickOrder() { document.getElementById('quickOrderModal').classList.add('hidden'); }
+
+        function logout() {
+            localStorage.removeItem('pharmai_token');
+            localStorage.removeItem('pharmai_user');
+            window.location.href = 'login.html';
+        }
 
         window.onload = init;
     </script>
